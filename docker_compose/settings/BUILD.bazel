@@ -1,0 +1,17 @@
+load("@bazel_skylib//:bzl_library.bzl", "bzl_library")
+load(
+    ":settings.bzl",
+    "toolchain_default_digest_mode",
+)
+
+package(default_visibility = ["//visibility:public"])
+
+bzl_library(
+    name = "settings_bzl",
+    srcs = glob(["*.bzl"]),
+    deps = [
+        "@bazel_skylib//rules:common_settings",
+    ],
+)
+
+toolchain_default_digest_mode()

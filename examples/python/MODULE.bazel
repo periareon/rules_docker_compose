@@ -1,0 +1,71 @@
+"""rules_docker_compose rust example"""
+
+module(
+    name = "rules_docker_compose_example",
+    version = "0.0.0",
+)
+
+bazel_dep(name = "rules_docker_compose", version = "0.0.0")
+bazel_dep(name = "rules_venv", version = "0.8.0")
+bazel_dep(name = "rules_req_compile", version = "1.0.0rc41")
+bazel_dep(name = "rules_oci", version = "2.2.6")
+bazel_dep(name = "platforms", version = "1.0.0")
+
+local_path_override(
+    module_name = "rules_docker_compose",
+    path = "../../",
+)
+
+# TODO: https://github.com/bazel-contrib/rules_oci/issues/575
+# `aspect_bazel_lib` is unfortunately required by `rules_oci`
+bazel_dep(name = "aspect_bazel_lib", version = "2.20.0")
+
+###############################################################################
+## Docker Compose toolchains
+###############################################################################
+
+docker_compose = use_extension("@rules_docker_compose//docker_compose:extensions.bzl", "docker_compose")
+docker_compose.toolchain(
+    name = "docker_compose_toolchains",
+)
+use_repo(docker_compose, "docker_compose_toolchains")
+
+register_toolchains("@docker_compose_toolchains//:all")
+
+###############################################################################
+## Python external deps
+###############################################################################
+
+requirements = use_extension("@rules_req_compile//extensions:python.bzl", "requirements")
+requirements.parse(
+    name = "pip_deps",
+    requirements_locks = {
+        "//requirements:requirements_linux_aarch64.txt": "//requirements:linux_aarch64",
+        "//requirements:requirements_linux_x86_64.txt": "//requirements:linux_x86_64",
+        "//requirements:requirements_macos_aarch64.txt": "//requirements:macos_aarch64",
+        "//requirements:requirements_windows_x86_64.txt": "//requirements:windows_x86_64",
+    },
+)
+use_repo(requirements, "pip_deps")
+
+###############################################################################
+## Images
+###############################################################################
+
+oci = use_extension("@rules_oci//oci:extensions.bzl", "oci")
+oci.pull(
+    name = "nginx",
+    digest = "sha256:fb01117203ff38c2f9af91db1a7409459182a37c87cced5cb442d1d8fcc66d19",
+    image = "nginx",
+    platforms = [
+        "linux/amd64",
+        "linux/arm64/v8",
+    ],
+    tag = "latest",
+)
+use_repo(
+    oci,
+    "nginx",
+    "nginx_linux_amd64",
+    "nginx_linux_arm64_v8",
+)

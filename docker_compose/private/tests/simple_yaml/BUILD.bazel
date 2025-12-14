@@ -1,0 +1,13 @@
+load("@bazel_skylib//rules:diff_test.bzl", "diff_test")
+load("//docker_compose:docker_compose_yaml.bzl", "docker_compose_yaml")
+
+docker_compose_yaml(
+    name = "simple",
+    yamls = ["docker-compose.yaml"],
+)
+
+diff_test(
+    name = "simple_diff_test",
+    file1 = "golden-docker-compose.yaml",
+    file2 = ":simple",
+)

@@ -1,0 +1,8 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "digest",
+    srcs = ["digest.go"],
+    importpath = "github.com/periareon/rules_docker_compose/docker_compose/private/digest",
+    visibility = ["//docker_compose/private:__subpackages__"],
+)

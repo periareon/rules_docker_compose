@@ -1,0 +1,86 @@
+load("@bazel_skylib//rules:diff_test.bzl", "diff_test")
+load("@rules_img//img:image.bzl", "image_manifest")
+load("@rules_img//img:layer.bzl", "image_layer")
+load("@rules_img//img:load.bzl", "image_load")
+load("@rules_img_images.bzl", "image")
+load("//docker_compose:docker_compose_yaml.bzl", "docker_compose_yaml")
+
+_IMAGES = [
+    "image_a",
+    "image_b",
+    "image_c",
+]
+
+# Create simple image layers and manifests for each test image
+# Note: Building from scratch (no base image) to ensure cross-platform compatibility
+[
+    image_layer(
+        name = "{}_layer".format(name),
+        srcs = {},
+    )
+    for name in _IMAGES
+]
+
+[
+    image_manifest(
+        name = name,
+        base = image("rules_docker_compose_test_img_container_base"),
+        layers = [":{}_layer".format(name)],
+    )
+    for name in _IMAGES
+]
+
+# Image A: Simple load with repository and tag
+image_load(
+    name = "image_a.load",
+    image = ":image_a",
+    tag = "docker.io/rules_docker_compose/test_img/image_a:latest",
+)
+
+# Image B: Load with repository and tag
+image_load(
+    name = "image_b.load",
+    image = ":image_b",
+    tag = "docker.io/rules_docker_compose/test_img/image_b:latest",
+)
+
+# Image C: Load with specific version tag
+image_load(
+    name = "image_c.load",
+    image = ":image_c",
+    tag = "docker.io/rules_docker_compose/test_img/image_c:1.2.3",
+)
+
+docker_compose_yaml(
+    name = "service_c",
+    out = "service_c/docker-compose.yaml",
+    images = [
+        ":image_c.load",
+    ],
+    yamls = ["docker-compose-service_c.yaml"],
+)
+
+diff_test(
+    name = "service_c_diff_test",
+    file1 = "golden-docker-compose-service_c.yaml",
+    file2 = ":service_c",
+)
+
+docker_compose_yaml(
+    name = "image_deps",
+    out = "image_deps/docker-compose.yaml",
+    images = [
+        ":image_a.load",
+        ":image_b.load",
+    ],
+    yamls = [
+        "docker-compose.yaml",
+        ":service_c",
+    ],
+)
+
+diff_test(
+    name = "image_deps_diff_test",
+    file1 = "golden-docker-compose.yaml",
+    file2 = ":image_deps",
+)

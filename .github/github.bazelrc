@@ -1,0 +1,26 @@
+# Bazel settings for use in Github CI
+
+# Always display the flags being used
+common --announce_rc
+
+# Show errors in CI
+test --test_output=errors
+
+# Show more information about failures
+build --verbose_failures
+
+# UI for cleaner CI output
+common --color=no
+common --show_timestamps
+
+# Show all failures
+common --keep_going
+
+# https://bazel.build/reference/command-line-reference#flag--enable_platform_specific_config
+common --enable_platform_specific_config
+
+# Github MacOS runners do not support docker
+test:macos --test_tag_filters=-"requires-docker"
+
+# Linux runners uses legacy image storage with docker
+test:linux --@rules_docker_compose//docker_compose/settings:toolchain_default_digest_mode=docker-legacy

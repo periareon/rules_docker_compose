@@ -1,0 +1,4 @@
+version: "3.8"
+services:
+  service_c:
+    image: docker.io/rules_docker_compose/test_oci/image_c:1.2.3

@@ -1,0 +1,96 @@
+load("@bazel_skylib//rules:diff_test.bzl", "diff_test")
+load("@bazel_skylib//rules:write_file.bzl", "write_file")
+load("@rules_oci//oci:defs.bzl", "oci_image", "oci_load")
+load("//docker_compose:docker_compose_yaml.bzl", "docker_compose_yaml")
+
+_IMAGES = [
+    "image_a",
+    "image_b",
+    "image_c",
+]
+
+[
+    oci_image(
+        name = name,
+        base = "@rules_docker_compose_test_oci_container_base",
+        # rules_oci does not support windows: https://github.com/bazel-contrib/rules_oci/issues/53
+        target_compatible_with = select({
+            "@platforms//os:windows": ["@platforms//:incompatible"],
+            "//conditions:default": [],
+        }),
+    )
+    for name in _IMAGES
+]
+
+write_file(
+    name = "image_a.repo_tags",
+    out = "image_a.repo_tags.txt",
+    content = ["docker.io/rules_docker_compose/test_oci/image_a:latest"],
+    tags = ["manual"],
+)
+
+oci_load(
+    name = "image_a.load",
+    image = ":image_a",
+    repo_tags = ":image_a.repo_tags.txt",
+)
+
+write_file(
+    name = "image_b.repo_tags",
+    out = "image_b.repo_tags.txt",
+    content = ["docker.io/rules_docker_compose/test_oci/image_b:latest"],
+    tags = ["manual"],
+)
+
+oci_load(
+    name = "image_b.load",
+    image = ":image_b",
+    repo_tags = ":image_b.repo_tags.txt",
+)
+
+write_file(
+    name = "image_c.repo_tags",
+    out = "image_c.repo_tags.txt",
+    content = ["docker.io/rules_docker_compose/test_oci/image_c:1.2.3"],
+    tags = ["manual"],
+)
+
+oci_load(
+    name = "image_c.load",
+    image = ":image_c",
+    repo_tags = ":image_c.repo_tags.txt",
+)
+
+docker_compose_yaml(
+    name = "service_c",
+    out = "service_c/docker-compose.yaml",
+    images = [
+        ":image_c.load",
+    ],
+    yamls = ["docker-compose-service_c.yaml"],
+)
+
+diff_test(
+    name = "service_c_diff_test",
+    file1 = "golden-docker-compose-service_c.yaml",
+    file2 = ":service_c",
+)
+
+docker_compose_yaml(
+    name = "image_deps",
+    out = "image_deps/docker-compose.yaml",
+    images = [
+        ":image_a.load",
+        ":image_b.load",
+    ],
+    yamls = [
+        "docker-compose.yaml",
+        ":service_c",
+    ],
+)
+
+diff_test(
+    name = "image_deps_diff_test",
+    file1 = "golden-docker-compose.yaml",
+    file2 = ":image_deps",
+)

@@ -1,0 +1,51 @@
+load("@bazel_skylib//:bzl_library.bzl", "bzl_library")
+load("//docker_compose/private:toolchain.bzl", "current_docker_compose_toolchain")
+
+exports_files([
+    "defs.bzl",
+    "docker_compose_test.bzl",
+    "docker_compose_yaml.bzl",
+    "docker_compose_toolchain.bzl",
+])
+
+toolchain_type(
+    name = "toolchain_type",
+    visibility = ["//visibility:public"],
+)
+
+current_docker_compose_toolchain(
+    name = "current_docker_compose_toolchain",
+    visibility = ["//visibility:public"],
+)
+
+bzl_library(
+    name = "defs_bzl",
+    srcs = ["defs.bzl"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":docker_compose_test_bzl",
+        ":docker_compose_toolchain_bzl",
+        ":docker_compose_yaml_bzl",
+    ],
+)
+
+bzl_library(
+    name = "docker_compose_test_bzl",
+    srcs = ["docker_compose_test.bzl"],
+    visibility = ["//visibility:public"],
+    deps = ["//docker_compose/private:bzl_lib"],
+)
+
+bzl_library(
+    name = "docker_compose_toolchain_bzl",
+    srcs = ["docker_compose_toolchain.bzl"],
+    visibility = ["//visibility:public"],
+    deps = ["//docker_compose/private:bzl_lib"],
+)
+
+bzl_library(
+    name = "docker_compose_yaml_bzl",
+    srcs = ["docker_compose_yaml.bzl"],
+    visibility = ["//visibility:public"],
+    deps = ["//docker_compose/private:bzl_lib"],
+)

@@ -1,0 +1,34 @@
+load("@rules_img//img:image.bzl", "image_manifest")
+load("@rules_img//img:layer.bzl", "image_layer")
+load("@rules_img//img:load.bzl", "image_load")
+load("@rules_img_images.bzl", "image")
+load("//docker_compose:docker_compose_test.bzl", "docker_compose_test")
+
+image_layer(
+    name = "nginx_layer",
+    srcs = {},
+)
+
+image_manifest(
+    name = "nginx",
+    base = image("rules_docker_compose_test_img_nginx"),
+    layers = [":nginx_layer"],
+)
+
+image_load(
+    name = "nginx.load",
+    image = ":nginx",
+    tag = "docker.io/rules_docker_compose/img_test/nginx:latest",
+)
+
+docker_compose_test(
+    name = "simple_test",
+    images = [":nginx.load"],
+    tags = ["requires-docker"],
+    test = "//docker_compose/private/tests/simple_test:simple_tester",
+    test_args = [
+        "-host",
+        "localhost:8081",
+    ],
+    yamls = ["docker-compose.yaml"],
+)

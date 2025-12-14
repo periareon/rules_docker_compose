@@ -1,0 +1,32 @@
+load("@rules_oci//oci:defs.bzl", "oci_image", "oci_load")
+load("//docker_compose:docker_compose_test.bzl", "docker_compose_test")
+
+oci_image(
+    name = "nginx",
+    base = "@rules_docker_compose_test_oci_nginx",
+    # rules_oci does not support windows: https://github.com/bazel-contrib/rules_oci/issues/53
+    target_compatible_with = select({
+        "@platforms//os:windows": ["@platforms//:incompatible"],
+        "//conditions:default": [],
+    }),
+)
+
+oci_load(
+    name = "nginx.load",
+    image = ":nginx",
+    repo_tags = [
+        "rules_docker_compose/oci_test/nginx:latest",
+    ],
+)
+
+docker_compose_test(
+    name = "simple_test",
+    images = [":nginx.load"],
+    tags = ["requires-docker"],
+    test = "//docker_compose/private/tests/simple_test:simple_tester",
+    test_args = [
+        "-host",
+        "localhost:8080",
+    ],
+    yamls = ["docker-compose.yaml"],
+)

@@ -1,0 +1,9 @@
+name: 00__docker_compose_private_tests_image_deps_oci__service_c
+services:
+  service_c:
+    image: docker.io/rules_docker_compose/test_oci/image_c:1.2.3
+    networks:
+      default: null
+networks:
+  default:
+    name: 00__docker_compose_private_tests_image_deps_oci__service_c_default

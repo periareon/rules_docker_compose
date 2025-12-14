@@ -1,0 +1,2 @@
+# Ensure consistent line endings for files used in diff tests
+*.yaml text eol=lf

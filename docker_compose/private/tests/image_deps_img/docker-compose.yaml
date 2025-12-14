@@ -1,0 +1,6 @@
+version: "3.8"
+services:
+  service_a:
+    image: docker.io/rules_docker_compose/test_img/image_a:latest
+  service_b:
+    image: docker.io/rules_docker_compose/test_img/image_b:latest

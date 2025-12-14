@@ -1,0 +1,5 @@
+services:
+    nginx:
+        image: rules_docker_compose/oci_test/nginx:latest
+        ports:
+            - "8080:80"
