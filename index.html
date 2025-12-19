@@ -190,6 +190,9 @@ networked infrastructure.</p>
 <p><strong>Resource tracking limitations</strong>: Bazel cannot track all resources created by docker-compose (spawned containers, networks, volumes). It's highly recommended to use resource tags to limit test execution and prevent resource exhaustion.</p>
 </li>
 <li>
+<p><strong>Port collisions</strong>: Tests that bind to the same host ports cannot run in parallel. If multiple tests use the same port mappings (e.g., <code>"8080:80"</code>), they will conflict when Bazel attempts to run them concurrently. Use unique port mappings per test or ensure tests are tagged to run serially.</p>
+</li>
+<li>
 <p><strong>Not suitable for unit tests</strong>: These rules are designed for integration tests that need real services. For unit testing, prefer mocking or in-process alternatives.</p>
 </li>
 <li>

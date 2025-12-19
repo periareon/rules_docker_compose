@@ -191,6 +191,9 @@ networked infrastructure.</p>
 <p><strong>Resource tracking limitations</strong>: Bazel cannot track all resources created by docker-compose (spawned containers, networks, volumes). It's highly recommended to use resource tags to limit test execution and prevent resource exhaustion.</p>
 </li>
 <li>
+<p><strong>Port collisions</strong>: Tests that bind to the same host ports cannot run in parallel. If multiple tests use the same port mappings (e.g., <code>"8080:80"</code>), they will conflict when Bazel attempts to run them concurrently. Use unique port mappings per test or ensure tests are tagged to run serially.</p>
+</li>
+<li>
 <p><strong>Not suitable for unit tests</strong>: These rules are designed for integration tests that need real services. For unit testing, prefer mocking or in-process alternatives.</p>
 </li>
 <li>
@@ -198,8 +201,186 @@ networked infrastructure.</p>
 </li>
 </ul>
 <p>Consider using these rules when you need to test interactions with real services, but prefer lighter-weight alternatives for fast, hermetic unit tests.</p>
-<div style="break-before: page; page-break-before: always;"></div><h1 id="rules"><a class="header" href="#rules">Rules</a></h1>
+<div style="break-before: page; page-break-before: always;"></div><!-- Generated with Stardoc: http://skydoc.bazel.build -->
+<h1 id="docker-compose"><a class="header" href="#docker-compose">Docker Compose</a></h1>
+<h2 id="rules"><a class="header" href="#rules">Rules</a></h2>
+<ul>
+<li><a href="rules.html#docker_compose_test">docker_compose_test</a></li>
+<li><a href="rules.html#docker_compose_toolchain">docker_compose_toolchain</a></li>
+<li><a href="rules.html#docker_compose_yaml">docker_compose_yaml</a></li>
+</ul>
+<p><a id="docker_compose_test"></a></p>
+<h2 id="docker_compose_test"><a class="header" href="#docker_compose_test">docker_compose_test</a></h2>
+<pre>
+load("@rules_docker_compose//docker_compose:defs.bzl", "docker_compose_test")
 
+docker_compose_test(<a href="rules.html#docker_compose_test-name">name</a>, <a href="rules.html#docker_compose_test-data">data</a>, <a href="rules.html#docker_compose_test-delay">delay</a>, <a href="rules.html#docker_compose_test-env">env</a>, <a href="rules.html#docker_compose_test-env_inherit">env_inherit</a>, <a href="rules.html#docker_compose_test-images">images</a>, <a href="rules.html#docker_compose_test-test">test</a>, <a href="rules.html#docker_compose_test-test_args">test_args</a>, <a href="rules.html#docker_compose_test-yamls">yamls</a>)
+</pre>
+<p>Runs a test with docker-compose services.</p>
+<p>This rule starts docker-compose services, waits for them to be ready, runs a test binary,
+and then tears down the services. The test lifecycle is:</p>
+<ol>
+<li>Loading container images into Docker using the specified loader targets</li>
+<li>Starting services with <code>docker-compose up</code></li>
+<li>Waiting for containers to be running (with health checks)</li>
+<li>Verifying image digests match the expected values from the lock file</li>
+<li>Running the test binary with optional arguments</li>
+<li>Cleaning up with <code>docker-compose down</code></li>
+</ol>
+<p>The test requires network access and Docker to be available on the host.</p>
+<p>Supported image loader types:</p>
+<div class="table-wrapper"><table><thead><tr><th>Loader</th><th>Source</th></tr></thead><tbody>
+<tr><td><a href="https://github.com/bazel-contrib/rules_oci/blob/main/docs/load.md#oci_load">oci_load</a></td><td>rules_oci</td></tr>
+<tr><td><a href="https://github.com/bazel-contrib/rules_img/blob/main/docs/load.md#image_load">image_load</a></td><td>rules_img</td></tr>
+</tbody></table>
+</div>
+<p>Example:</p>
+<pre><code class="language-python">load("@rules_docker_compose//docker_compose:docker_compose_test.bzl", "docker_compose_test")
+load("@rules_oci//oci:defs.bzl", "oci_load")
+
+oci_load(
+    name = "my_service.load",
+    image = ":my_service",
+    repo_tags = ["my-service:latest"],
+)
+
+docker_compose_test(
+    name = "integration_test",
+    yamls = ["docker-compose.yaml"],
+    images = [":my_service.load"],
+    test = ":my_test_binary",
+    test_args = ["-host", "localhost:8080"],
+    delay = 2,  # Wait 2 seconds after containers start
+)
+</code></pre>
+<p><strong>ATTRIBUTES</strong></p>
+<div class="table-wrapper"><table><thead><tr><th style="text-align: left">Name</th><th style="text-align: left">Description</th><th style="text-align: left">Type</th><th style="text-align: left">Mandatory</th><th style="text-align: left">Default</th></tr></thead><tbody>
+<tr><td style="text-align: left"><a id="docker_compose_test-name"></a>name</td><td style="text-align: left">A unique name for this target.</td><td style="text-align: left"><a href="https://bazel.build/concepts/labels#target-names">Name</a></td><td style="text-align: left">required</td><td style="text-align: left"></td></tr>
+<tr><td style="text-align: left"><a id="docker_compose_test-data"></a>data</td><td style="text-align: left">Additional runtime dependencies for the test.</td><td style="text-align: left"><a href="https://bazel.build/concepts/labels">List of labels</a></td><td style="text-align: left">optional</td><td style="text-align: left"><code>[]</code></td></tr>
+<tr><td style="text-align: left"><a id="docker_compose_test-delay"></a>delay</td><td style="text-align: left">Seconds to wait after containers are running before executing the test. Useful for services that need initialization time beyond their health checks.</td><td style="text-align: left">Integer</td><td style="text-align: left">optional</td><td style="text-align: left"><code>1</code></td></tr>
+<tr><td style="text-align: left"><a id="docker_compose_test-env"></a>env</td><td style="text-align: left">Dictionary of strings; values are subject to <code>$(location)</code> and "Make variable" substitution</td><td style="text-align: left"><a href="https://bazel.build/rules/lib/dict">Dictionary: String -&gt; String</a></td><td style="text-align: left">optional</td><td style="text-align: left"><code>{}</code></td></tr>
+<tr><td style="text-align: left"><a id="docker_compose_test-env_inherit"></a>env_inherit</td><td style="text-align: left">Specifies additional environment variables to inherit from the external environment when the test is executed by <code>bazel test</code>.</td><td style="text-align: left">List of strings</td><td style="text-align: left">optional</td><td style="text-align: left"><code>[]</code></td></tr>
+<tr><td style="text-align: left"><a id="docker_compose_test-images"></a>images</td><td style="text-align: left">Image loader targets that provide the container images for the docker-compose services. Each image will be loaded into Docker before <code>docker-compose up</code> is called. See the rule documentation for supported loader types.</td><td style="text-align: left"><a href="https://bazel.build/concepts/labels">List of labels</a></td><td style="text-align: left">optional</td><td style="text-align: left"><code>[]</code></td></tr>
+<tr><td style="text-align: left"><a id="docker_compose_test-test"></a>test</td><td style="text-align: left">The test binary to execute after containers are running. The binary will receive arguments from <code>test_args</code>.</td><td style="text-align: left"><a href="https://bazel.build/concepts/labels">Label</a></td><td style="text-align: left">optional</td><td style="text-align: left"><code>None</code></td></tr>
+<tr><td style="text-align: left"><a id="docker_compose_test-test_args"></a>test_args</td><td style="text-align: left">Arguments to pass to the test binary.</td><td style="text-align: left">List of strings</td><td style="text-align: left">optional</td><td style="text-align: left"><code>[]</code></td></tr>
+<tr><td style="text-align: left"><a id="docker_compose_test-yamls"></a>yamls</td><td style="text-align: left">One or more docker-compose YAML files defining the services to run. Files are merged using <code>docker-compose config</code>.</td><td style="text-align: left"><a href="https://bazel.build/concepts/labels">List of labels</a></td><td style="text-align: left">optional</td><td style="text-align: left"><code>[]</code></td></tr>
+</tbody></table>
+</div>
+<p><a id="docker_compose_toolchain"></a></p>
+<h2 id="docker_compose_toolchain"><a class="header" href="#docker_compose_toolchain">docker_compose_toolchain</a></h2>
+<pre>
+load("@rules_docker_compose//docker_compose:defs.bzl", "docker_compose_toolchain")
+
+docker_compose_toolchain(<a href="rules.html#docker_compose_toolchain-name">name</a>, <a href="rules.html#docker_compose_toolchain-digest_mode">digest_mode</a>, <a href="rules.html#docker_compose_toolchain-docker_compose">docker_compose</a>, <a href="rules.html#docker_compose_toolchain-version">version</a>)
+</pre>
+<p>A toolchain for providing Docker-Compose to Bazel rules.</p>
+<p>The <code>digest_mode</code> attribute controls how image digests are computed for lock files:</p>
+<div class="table-wrapper"><table><thead><tr><th>Mode</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>oci</code></td><td>Uses the OCI manifest digest directly from the image's index.json. Use this when images are pushed to an OCI-compliant registry.</td></tr>
+<tr><td><code>docker</code></td><td>Converts the OCI manifest to Docker V2 Schema 2 format and computes the resulting manifest digest. This matches the image ID that Docker reports after <code>docker load</code>. Use this when images are loaded locally via <code>oci_load</code> or <code>image_load</code>.</td></tr>
+</tbody></table>
+</div>
+<p>See the <a href="https://github.com/opencontainers/image-spec/blob/main/manifest.md">OCI Image Manifest spec</a>
+and the <a href="https://docs.docker.com/registry/spec/manifest-v2-2/">Docker V2 Schema 2 spec</a>.</p>
+<p>Example:</p>
+<pre><code class="language-python">load("@rules_docker_compose//docker_compose:docker_compose_toolchain.bzl", "docker_compose_toolchain")
+
+filegroup(
+    name = "docker_compose_bin",
+    srcs = ["docker_compose/docker_compose.exe"],
+    # Note that additional runfiles associated with a hermetic archive
+    # of docker_compose should be associated with the target passed to the
+    # `docker_compose` attribute.
+    data = glob(["docker_compose/**"]),
+)
+
+docker_compose_toolchain(
+    name = "docker_compose_toolchain",
+    docker_compose = ":docker_compose_bin",
+    visibility = ["//visibility:public"],
+)
+</code></pre>
+<p>For users looking to use a system install of Docker-Compose, a shell/batch script
+should be added that points to the system install.</p>
+<p>Example or non-hermetic toolchain:</p>
+<p><code>docker_compose.sh</code></p>
+<pre><code class="language-bash">#!/usr/bin/env bash
+set -euo pipefail
+exec /usr/bin/docker_compose $@
+</code></pre>
+<p><code>docker_compose.bat</code></p>
+<pre><code class="language-batch">@ECHO OFF
+C:\Program Files\Docker\Docker\resources\docker-compose.exe %*
+set EXITCODE=%ERRORLEVEL%
+exit /b %EXITCODE%
+</code></pre>
+<pre><code class="language-python">load("@rules_docker_compose//docker_compose:docker_compose_toolchain.bzl", "docker_compose_toolchain")
+
+filegroup(
+    name = "docker_compose_bin",
+    srcs = select({
+        "@platforms//os:windows": ["docker_compose.bat"],
+        "//conditions:default": ["docker_compose.sh"],
+    }),
+)
+
+docker_compose_toolchain(
+    name = "docker_compose_toolchain",
+    docker_compose = ":docker_compose_bin",
+    visibility = ["//visibility:public"],
+)
+</code></pre>
+<p><strong>ATTRIBUTES</strong></p>
+<div class="table-wrapper"><table><thead><tr><th style="text-align: left">Name</th><th style="text-align: left">Description</th><th style="text-align: left">Type</th><th style="text-align: left">Mandatory</th><th style="text-align: left">Default</th></tr></thead><tbody>
+<tr><td style="text-align: left"><a id="docker_compose_toolchain-name"></a>name</td><td style="text-align: left">A unique name for this target.</td><td style="text-align: left"><a href="https://bazel.build/concepts/labels#target-names">Name</a></td><td style="text-align: left">required</td><td style="text-align: left"></td></tr>
+<tr><td style="text-align: left"><a id="docker_compose_toolchain-digest_mode"></a>digest_mode</td><td style="text-align: left">Controls how image digests are computed for lock files. See the rule documentation for details on available modes.</td><td style="text-align: left">String</td><td style="text-align: left">optional</td><td style="text-align: left"><code>"docker"</code></td></tr>
+<tr><td style="text-align: left"><a id="docker_compose_toolchain-docker_compose"></a>docker_compose</td><td style="text-align: left">The docker-compose executable.</td><td style="text-align: left"><a href="https://bazel.build/concepts/labels">Label</a></td><td style="text-align: left">required</td><td style="text-align: left"></td></tr>
+<tr><td style="text-align: left"><a id="docker_compose_toolchain-version"></a>version</td><td style="text-align: left">The version of docker-compose.</td><td style="text-align: left">String</td><td style="text-align: left">required</td><td style="text-align: left"></td></tr>
+</tbody></table>
+</div>
+<p><a id="docker_compose_yaml"></a></p>
+<h2 id="docker_compose_yaml"><a class="header" href="#docker_compose_yaml">docker_compose_yaml</a></h2>
+<pre>
+load("@rules_docker_compose//docker_compose:defs.bzl", "docker_compose_yaml")
+
+docker_compose_yaml(<a href="rules.html#docker_compose_yaml-name">name</a>, <a href="rules.html#docker_compose_yaml-out">out</a>, <a href="rules.html#docker_compose_yaml-images">images</a>, <a href="rules.html#docker_compose_yaml-yamls">yamls</a>)
+</pre>
+<p>Merges multiple docker-compose YAML files and validates image references.</p>
+<p>This rule uses <code>docker-compose config</code> to merge one or more docker-compose YAML files
+into a single, canonical configuration. It also validates that all images referenced
+in the configuration have corresponding loader targets specified in the <code>images</code> attribute.</p>
+<p>A lock file is generated containing a mapping of image tags to their content digests,
+which can be used to verify that the correct images are loaded at runtime.</p>
+<p>Supported image loader types:</p>
+<div class="table-wrapper"><table><thead><tr><th>Loader</th><th>Source</th></tr></thead><tbody>
+<tr><td><a href="https://github.com/bazel-contrib/rules_oci/blob/main/docs/load.md#oci_load">oci_load</a></td><td>rules_oci</td></tr>
+<tr><td><a href="https://github.com/bazel-contrib/rules_img/blob/main/docs/load.md#image_load">image_load</a></td><td>rules_img</td></tr>
+</tbody></table>
+</div>
+<p>Example:</p>
+<pre><code class="language-python">load("@rules_docker_compose//docker_compose:docker_compose_yaml.bzl", "docker_compose_yaml")
+load("@rules_oci//oci:defs.bzl", "oci_load")
+
+oci_load(
+    name = "my_image.load",
+    image = ":my_image",
+    repo_tags = ["my-app:latest"],
+)
+
+docker_compose_yaml(
+    name = "compose",
+    yamls = ["docker-compose.yaml"],
+    images = [":my_image.load"],
+)
+</code></pre>
+<p><strong>ATTRIBUTES</strong></p>
+<div class="table-wrapper"><table><thead><tr><th style="text-align: left">Name</th><th style="text-align: left">Description</th><th style="text-align: left">Type</th><th style="text-align: left">Mandatory</th><th style="text-align: left">Default</th></tr></thead><tbody>
+<tr><td style="text-align: left"><a id="docker_compose_yaml-name"></a>name</td><td style="text-align: left">A unique name for this target.</td><td style="text-align: left"><a href="https://bazel.build/concepts/labels#target-names">Name</a></td><td style="text-align: left">required</td><td style="text-align: left"></td></tr>
+<tr><td style="text-align: left"><a id="docker_compose_yaml-out"></a>out</td><td style="text-align: left">Optional output filename for the merged docker-compose YAML. Defaults to <code>{name}/docker-compose.yaml</code>.</td><td style="text-align: left"><a href="https://bazel.build/concepts/labels">Label</a>; <a href="https://bazel.build/reference/be/common-definitions#configurable-attributes">nonconfigurable</a></td><td style="text-align: left">optional</td><td style="text-align: left"><code>None</code></td></tr>
+<tr><td style="text-align: left"><a id="docker_compose_yaml-images"></a>images</td><td style="text-align: left">Image loader targets that provide the container images referenced in the YAML files. Each image referenced in the docker-compose YAML must have a corresponding loader target. See the rule documentation for supported loader types.</td><td style="text-align: left"><a href="https://bazel.build/concepts/labels">List of labels</a></td><td style="text-align: left">optional</td><td style="text-align: left"><code>[]</code></td></tr>
+<tr><td style="text-align: left"><a id="docker_compose_yaml-yamls"></a>yamls</td><td style="text-align: left">One or more docker-compose YAML files to merge. Files are merged in order using <code>docker-compose config</code>.</td><td style="text-align: left"><a href="https://bazel.build/concepts/labels">List of labels</a></td><td style="text-align: left">required</td><td style="text-align: left"></td></tr>
+</tbody></table>
+</div>
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
