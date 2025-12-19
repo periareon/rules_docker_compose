@@ -162,13 +162,41 @@ networked infrastructure.</p>
 <pre><code class="language-python">bazel_dep(name = "rules_docker_compose", version = "{version}")
 </code></pre>
 <h2 id="overview"><a class="header" href="#overview">Overview</a></h2>
-<p>TODO</p>
-<h2 id="why-not-to-use-these-rules"><a class="header" href="#why-not-to-use-these-rules">Why not to use these rules</a></h2>
-<p>TODO make better</p>
+<p><code>rules_docker_compose</code> provides Bazel rules for integrating Docker-Compose into your build and test workflows. These rules enable you to:</p>
 <ul>
-<li>requires network access in tests</li>
-<li>Involves many more resources Bazel cannot track (spawned containers) (resource tags are highly recommended)</li>
+<li><strong>Merge and validate docker-compose configurations</strong> using the <code>docker_compose_yaml</code> rule, which combines multiple YAML files and ensures all referenced images have corresponding loader targets</li>
+<li><strong>Run integration tests</strong> with the <code>docker_compose_test</code> rule, which automatically starts services, waits for them to be ready, runs your test binary, and cleans up containers</li>
+<li><strong>Verify image integrity</strong> through automatically generated lock files that map image tags to content digests, ensuring the correct images are loaded at runtime</li>
 </ul>
+<p>The rules integrate seamlessly with <code>rules_oci</code> and <code>rules_img</code>, allowing you to use container images built with Bazel in your docker-compose configurations. They handle the complete lifecycle of docker-compose services during testing, including image loading, service startup, health checking, and cleanup.</p>
+<h3 id="key-features"><a class="header" href="#key-features">Key Features</a></h3>
+<ul>
+<li><strong>Automatic image loading</strong>: Container images from <code>oci_load</code> or <code>image_load</code> targets are automatically loaded into Docker before services start</li>
+<li><strong>Service health checking</strong>: Waits for containers to be running before executing tests</li>
+<li><strong>Digest verification</strong>: Validates that running images match expected digests from lock files</li>
+<li><strong>Hermetic configuration</strong>: Merges multiple docker-compose YAML files into a single canonical configuration</li>
+<li><strong>Flexible digest modes</strong>: Supports both OCI and Docker V2 manifest formats for digest computation</li>
+</ul>
+<h2 id="why-not-to-use-these-rules"><a class="header" href="#why-not-to-use-these-rules">Why not to use these rules</a></h2>
+<p>These rules are designed for integration testing scenarios where you need to test against real networked services. However, they come with trade-offs that may not be suitable for all use cases:</p>
+<ul>
+<li>
+<p><strong>Requires network access</strong>: Tests must be marked with <code>requires-network</code> and cannot run in fully sandboxed environments. This means tests may be slower and less reproducible than pure unit tests.</p>
+</li>
+<li>
+<p><strong>Docker dependency</strong>: Tests require Docker (or compatible container runtime) to be available on the host machine. This adds an external dependency and may not work in all CI/CD environments.</p>
+</li>
+<li>
+<p><strong>Resource tracking limitations</strong>: Bazel cannot track all resources created by docker-compose (spawned containers, networks, volumes). It's highly recommended to use resource tags to limit test execution and prevent resource exhaustion.</p>
+</li>
+<li>
+<p><strong>Not suitable for unit tests</strong>: These rules are designed for integration tests that need real services. For unit testing, prefer mocking or in-process alternatives.</p>
+</li>
+<li>
+<p><strong>Platform-specific behavior</strong>: Container behavior may vary across different platforms and Docker versions, potentially affecting test reproducibility.</p>
+</li>
+</ul>
+<p>Consider using these rules when you need to test interactions with real services, but prefer lighter-weight alternatives for fast, hermetic unit tests.</p>
 
                     </main>
 
