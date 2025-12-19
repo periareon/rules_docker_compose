@@ -156,10 +156,21 @@
                 <div id="content" class="content">
                     <main>
                         <h1 id="rules_docker_compose"><a class="header" href="#rules_docker_compose">rules_docker_compose</a></h1>
-<p>Bazel rules for running tests which use <a href="https://docs.docker.com/compose/">Docker-Compose</a> to setup
+<p>Bazel rules for running integration tests which use <a href="https://docs.docker.com/compose/">Docker-Compose</a> to setup
 networked infrastructure.</p>
 <h2 id="setup"><a class="header" href="#setup">Setup</a></h2>
 <pre><code class="language-python">bazel_dep(name = "rules_docker_compose", version = "{version}")
+
+docker_compose = use_extension("@rules_docker_compose//docker_compose:extensions.bzl", "docker_compose")
+docker_compose.toolchain(
+    name = "docker_compose_toolchains",
+    version = "2.24.0",
+)
+use_repo(docker_compose, "docker_compose_toolchains")
+
+register_toolchains(
+    "@docker_compose_toolchains//:all",
+)
 </code></pre>
 <h2 id="overview"><a class="header" href="#overview">Overview</a></h2>
 <p><code>rules_docker_compose</code> provides Bazel rules for integrating Docker-Compose into your build and test workflows. These rules enable you to:</p>
@@ -169,14 +180,6 @@ networked infrastructure.</p>
 <li><strong>Verify image integrity</strong> through automatically generated lock files that map image tags to content digests, ensuring the correct images are loaded at runtime</li>
 </ul>
 <p>The rules integrate seamlessly with <code>rules_oci</code> and <code>rules_img</code>, allowing you to use container images built with Bazel in your docker-compose configurations. They handle the complete lifecycle of docker-compose services during testing, including image loading, service startup, health checking, and cleanup.</p>
-<h3 id="key-features"><a class="header" href="#key-features">Key Features</a></h3>
-<ul>
-<li><strong>Automatic image loading</strong>: Container images from <code>oci_load</code> or <code>image_load</code> targets are automatically loaded into Docker before services start</li>
-<li><strong>Service health checking</strong>: Waits for containers to be running before executing tests</li>
-<li><strong>Digest verification</strong>: Validates that running images match expected digests from lock files</li>
-<li><strong>Hermetic configuration</strong>: Merges multiple docker-compose YAML files into a single canonical configuration</li>
-<li><strong>Flexible digest modes</strong>: Supports both OCI and Docker V2 manifest formats for digest computation</li>
-</ul>
 <h2 id="why-not-to-use-these-rules"><a class="header" href="#why-not-to-use-these-rules">Why not to use these rules</a></h2>
 <p>These rules are designed for integration testing scenarios where you need to test against real networked services. However, they come with trade-offs that may not be suitable for all use cases:</p>
 <ul>
@@ -191,9 +194,6 @@ networked infrastructure.</p>
 </li>
 <li>
 <p><strong>Port collisions</strong>: Tests that bind to the same host ports cannot run in parallel. If multiple tests use the same port mappings (e.g., <code>"8080:80"</code>), they will conflict when Bazel attempts to run them concurrently. Use unique port mappings per test or ensure tests are tagged to run serially.</p>
-</li>
-<li>
-<p><strong>Not suitable for unit tests</strong>: These rules are designed for integration tests that need real services. For unit testing, prefer mocking or in-process alternatives.</p>
 </li>
 <li>
 <p><strong>Platform-specific behavior</strong>: Container behavior may vary across different platforms and Docker versions, potentially affecting test reproducibility.</p>
