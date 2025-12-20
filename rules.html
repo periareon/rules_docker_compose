@@ -231,7 +231,8 @@ docker_compose_toolchain(<a href="#docker_compose_toolchain-name">name</a>, <a h
 <p>The <code>digest_mode</code> attribute controls how image digests are computed for lock files:</p>
 <div class="table-wrapper"><table><thead><tr><th>Mode</th><th>Description</th></tr></thead><tbody>
 <tr><td><code>oci</code></td><td>Uses the OCI manifest digest directly from the image's index.json. Use this when images are pushed to an OCI-compliant registry.</td></tr>
-<tr><td><code>docker</code></td><td>Converts the OCI manifest to Docker V2 Schema 2 format and computes the resulting manifest digest. This matches the image ID that Docker reports after <code>docker load</code>. Use this when images are loaded locally via <code>oci_load</code> or <code>image_load</code>.</td></tr>
+<tr><td><code>docker-legacy</code></td><td>Uses the config blob digest from the OCI manifest. This is the image ID that Docker reports after <code>docker load</code> when using legacy storage (without containerd). Use this for Linux CI runners like GitHub Actions.</td></tr>
+<tr><td><code>docker-containerd</code></td><td>Converts the OCI manifest to Docker V2 Schema 2 format and computes the manifest digest. This is the image ID that Docker reports after <code>docker load</code> when using containerd storage. Use this for Docker Desktop or Docker Engine with containerd enabled.</td></tr>
 </tbody></table>
 </div>
 <p>See the <a href="https://github.com/opencontainers/image-spec/blob/main/manifest.md">OCI Image Manifest spec</a>
@@ -287,7 +288,7 @@ docker_compose_toolchain(
 <p><strong>ATTRIBUTES</strong></p>
 <div class="table-wrapper"><table><thead><tr><th style="text-align: left">Name</th><th style="text-align: left">Description</th><th style="text-align: left">Type</th><th style="text-align: left">Mandatory</th><th style="text-align: left">Default</th></tr></thead><tbody>
 <tr><td style="text-align: left"><a id="docker_compose_toolchain-name"></a>name</td><td style="text-align: left">A unique name for this target.</td><td style="text-align: left"><a href="https://bazel.build/concepts/labels#target-names">Name</a></td><td style="text-align: left">required</td><td style="text-align: left"></td></tr>
-<tr><td style="text-align: left"><a id="docker_compose_toolchain-digest_mode"></a>digest_mode</td><td style="text-align: left">Controls how image digests are computed for lock files. See the rule documentation for details on available modes.</td><td style="text-align: left">String</td><td style="text-align: left">optional</td><td style="text-align: left"><code>"docker"</code></td></tr>
+<tr><td style="text-align: left"><a id="docker_compose_toolchain-digest_mode"></a>digest_mode</td><td style="text-align: left">Controls how image digests are computed for lock files. See the rule documentation for details on available modes.</td><td style="text-align: left">String</td><td style="text-align: left">optional</td><td style="text-align: left"><code>""</code></td></tr>
 <tr><td style="text-align: left"><a id="docker_compose_toolchain-docker_compose"></a>docker_compose</td><td style="text-align: left">The docker-compose executable.</td><td style="text-align: left"><a href="https://bazel.build/concepts/labels">Label</a></td><td style="text-align: left">required</td><td style="text-align: left"></td></tr>
 <tr><td style="text-align: left"><a id="docker_compose_toolchain-version"></a>version</td><td style="text-align: left">The version of docker-compose.</td><td style="text-align: left">String</td><td style="text-align: left">required</td><td style="text-align: left"></td></tr>
 </tbody></table>
