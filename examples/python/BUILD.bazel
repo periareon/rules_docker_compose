@@ -32,7 +32,7 @@ oci_load(
 docker_compose_test(
     name = "simple_test",
     env = {
-        "SERVICE_HOST": "localhost:8080",
+        "SERVICE_HOST": "localhost:1337",
     },
     images = [":nginx.load"],
     tags = ["requires-docker"],
