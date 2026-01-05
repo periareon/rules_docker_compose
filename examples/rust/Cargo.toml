@@ -7,4 +7,4 @@ edition = "2021"
 path = "rules_docker_compose_example.rs"
 
 [dependencies]
-reqwest = { version = "0.12", features = ["blocking"] }
+reqwest = { version = "0.13.1", features = ["blocking"], default-features = false }
