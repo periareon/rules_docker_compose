@@ -260,7 +260,7 @@
     "@@rules_oci+//oci:extensions.bzl%oci": {
       "general": {
         "bzlTransitiveDigest": "kImo2N9faSHQJeJErGTojg3fW/DVQqIKoeXVw1ahNEw=",
-        "usagesDigest": "+V+Da8WNgy9vSaJbZZrPV0+58Q6LgT8BqfAlVwrZxCM=",
+        "usagesDigest": "3EcUuVrDqSyK0dCV8+aZcbtiyZn6STH3WIryfOk5NYM=",
         "recordedFileInputs": {},
         "recordedDirentsInputs": {},
         "envVariables": {},
@@ -423,12 +423,12 @@
           }
         },
         "moduleExtensionMetadata": {
-          "explicitRootModuleDirectDeps": [],
-          "explicitRootModuleDirectDevDeps": [
+          "explicitRootModuleDirectDeps": [
             "nginx",
             "nginx_linux_amd64",
             "nginx_linux_arm64_v8"
           ],
+          "explicitRootModuleDirectDevDeps": [],
           "useAllRepos": "NO",
           "reproducible": false
         },
