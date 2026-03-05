@@ -2,7 +2,7 @@
 
 module(
     name = "rules_docker_compose",
-    version = "0.0.1",
+    version = "0.1.0",
 )
 
 bazel_dep(name = "platforms", version = "1.0.0")
