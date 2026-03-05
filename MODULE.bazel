@@ -20,16 +20,11 @@ use_repo(
     "in_gopkg_yaml_v3",
 )
 
-docker_compose = use_extension("//docker_compose:extensions.bzl", "docker_compose", dev_dependency = True)
-docker_compose.toolchain(
-    name = "docker_compose_toolchains",
-    version = "2.24.0",
-)
+docker_compose = use_extension("//docker_compose:extensions.bzl", "docker_compose")
 use_repo(docker_compose, "docker_compose_toolchains")
 
 register_toolchains(
     "@docker_compose_toolchains//:all",
-    dev_dependency = True,
 )
 
 # TODO: https://github.com/bazel-contrib/rules_oci/issues/575
@@ -38,8 +33,8 @@ bazel_dep(name = "aspect_bazel_lib", version = "2.20.0", dev_dependency = True)
 bazel_dep(name = "rules_oci", version = "2.2.6", dev_dependency = True)
 bazel_dep(name = "rules_img", version = "0.3.2", dev_dependency = True)
 bazel_dep(name = "stardoc", version = "0.8.0", dev_dependency = True)
-bazel_dep(name = "rules_rust_mdbook", version = "0.66.0", dev_dependency = True)
-bazel_dep(name = "rules_shell", version = "0.5.1", dev_dependency = True)
+bazel_dep(name = "rules_rust_mdbook", version = "0.69.0", dev_dependency = True)
+bazel_dep(name = "rules_shell", version = "0.6.1", dev_dependency = True)
 
 img = use_extension("@rules_img//img:extensions.bzl", "images", dev_dependency = True)
 img.pull(

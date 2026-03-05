@@ -16,8 +16,6 @@ PLATFORM_TO_CONSTRAINTS = {
     "windows-x86_64": ["@platforms//os:windows", "@platforms//cpu:x86_64"],
 }
 
-DOCKER_COMPOSE_DEFAULT_VERSION = "5.0.0"
-
 DOCKER_COMPOSE_VERSIONS = _DOCKER_COMPOSE_VERSIONS
 
 _DOCKER_COMPOSE_TOOLCHAIN_BUILD_FILE_CONTENT = """\
@@ -109,6 +107,7 @@ toolchain(
     name = "{name}",
     exec_compatible_with = {exec_constraint_sets_serialized},
     target_compatible_with = {target_constraint_sets_serialized},
+    target_settings = {target_settings_serialized},
     toolchain = "{toolchain}",
     toolchain_type = "@rules_docker_compose//docker_compose:toolchain_type",
     visibility = ["//visibility:public"],
@@ -119,12 +118,14 @@ def _BUILD_for_toolchain_hub(
         toolchain_names,
         toolchain_labels,
         target_compatible_with,
-        exec_compatible_with):
+        exec_compatible_with,
+        target_settings):
     return "\n".join([_BUILD_FILE_FOR_TOOLCHAIN_HUB_TEMPLATE.format(
         name = toolchain_name,
         exec_constraint_sets_serialized = json.encode(exec_compatible_with.get(toolchain_name, [])),
         target_constraint_sets_serialized = json.encode(target_compatible_with.get(toolchain_name, [])),
         toolchain = toolchain_labels[toolchain_name],
+        target_settings_serialized = repr(target_settings.get(toolchain_name, None)),
     ) for toolchain_name in toolchain_names])
 
 def _docker_compose_toolchain_repository_hub_impl(repository_ctx):
@@ -137,6 +138,7 @@ def _docker_compose_toolchain_repository_hub_impl(repository_ctx):
         toolchain_labels = repository_ctx.attr.toolchain_labels,
         target_compatible_with = repository_ctx.attr.target_compatible_with,
         exec_compatible_with = repository_ctx.attr.exec_compatible_with,
+        target_settings = repository_ctx.attr.target_settings,
     ))
 
 docker_compose_toolchain_repository_hub = repository_rule(
@@ -150,6 +152,10 @@ docker_compose_toolchain_repository_hub = repository_rule(
             mandatory = True,
         ),
         "target_compatible_with": attr.string_list_dict(
+            doc = "A list of constraints for the target platform for this toolchain, keyed by toolchain name.",
+            mandatory = True,
+        ),
+        "target_settings": attr.string_list_dict(
             doc = "A list of constraints for the target platform for this toolchain, keyed by toolchain name.",
             mandatory = True,
         ),

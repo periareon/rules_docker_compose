@@ -18,6 +18,12 @@ current_docker_compose_toolchain(
     visibility = ["//visibility:public"],
 )
 
+alias(
+    name = "docker_compose",
+    actual = ":current_docker_compose_toolchain",
+    visibility = ["//visibility:public"],
+)
+
 bzl_library(
     name = "defs_bzl",
     srcs = ["defs.bzl"],

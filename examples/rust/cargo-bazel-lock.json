@@ -1,5 +1,5 @@
 {
-  "checksum": "fdde529fad8e66ee7b412cafc88cfaf111666ec0d48c22d8764a3d4370d15bb0",
+  "checksum": "40496ec1585b8086d4c35e40209cf573e0f26c1cbb337884d51781a1bf72c911",
   "crates": {
     "atomic-waker 1.1.2": {
       "name": "atomic-waker",
