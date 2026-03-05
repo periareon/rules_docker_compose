@@ -139,8 +139,20 @@ docker_compose_toolchain(
 def _current_docker_compose_toolchain_impl(ctx):
     toolchain = ctx.toolchains[TOOLCHAIN_TYPE]
 
+    executable = ctx.actions.declare_file("{}/{}".format(
+        ctx.label.name,
+        toolchain.docker_compose.basename,
+    ))
+
+    ctx.actions.symlink(
+        target_file = toolchain.docker_compose,
+        output = executable,
+        is_executable = True,
+    )
+
     return [
         DefaultInfo(
+            executable = executable,
             files = toolchain.all_files,
             runfiles = ctx.runfiles(transitive_files = toolchain.all_files),
         ),
@@ -152,4 +164,5 @@ current_docker_compose_toolchain = rule(
     doc = "Access the `docker_compose_toolchain` for the current configuration.",
     implementation = _current_docker_compose_toolchain_impl,
     toolchains = [TOOLCHAIN_TYPE],
+    executable = True,
 )

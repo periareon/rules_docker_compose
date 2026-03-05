@@ -6,7 +6,7 @@ module(
 )
 
 bazel_dep(name = "rules_docker_compose", version = "0.0.0")
-bazel_dep(name = "rules_rust", version = "0.68.0")
+bazel_dep(name = "rules_rust", version = "0.69.0")
 bazel_dep(name = "rules_oci", version = "2.2.6")
 bazel_dep(name = "platforms", version = "1.0.0")
 
@@ -18,18 +18,6 @@ local_path_override(
 # TODO: https://github.com/bazel-contrib/rules_oci/issues/575
 # `aspect_bazel_lib` is unfortunately required by `rules_oci`
 bazel_dep(name = "aspect_bazel_lib", version = "2.20.0")
-
-###############################################################################
-## Docker Compose toolchains
-###############################################################################
-
-docker_compose = use_extension("@rules_docker_compose//docker_compose:extensions.bzl", "docker_compose")
-docker_compose.toolchain(
-    name = "docker_compose_toolchains",
-)
-use_repo(docker_compose, "docker_compose_toolchains")
-
-register_toolchains("@docker_compose_toolchains//:all")
 
 ###############################################################################
 ## Rust external crates
