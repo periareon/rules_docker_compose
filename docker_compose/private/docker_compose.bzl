@@ -55,6 +55,7 @@ It can be consumed by `docker_compose_test` or other rules that need to work
 with docker-compose configurations.
 """,
     fields = {
+        "data": "depset[File]: Additional data files referenced by the configuration (env_file, configs, secrets, bind-mount sources).",
         "images": "depset[File]: The image loader executables for each image referenced in the yaml.",
         "yaml": "File: The merged docker-compose YAML file.",
         "yaml_deps": "depset[File]: All files which contributed to the merged yaml (input yamls and image manifests).",
@@ -139,7 +140,9 @@ def _docker_compose_yaml_action(
         out_lock,
         toolchain,
         image_manifests = [],
-        image_inputs = []):
+        image_inputs = [],
+        data_inputs = [],
+        config_file = None):
     # Sanitize label for project name: replace @ with AT, + with -, / with _, : with __
     project_name = str(ctx.label).replace("@", "0").replace("+", "-").replace("/", "_").replace(":", "__")
 
@@ -156,11 +159,33 @@ def _docker_compose_yaml_action(
         # Add the single_image_manifest to args
         args.add("-image_manifest", manifest)
 
+    extra_inputs = []
+    if data_inputs:
+        data_manifest = {}
+        for f in data_inputs:
+            f_rlocation = _rlocationpath(f, ctx.workspace_name)
+            data_manifest[f.path] = f_rlocation
+
+            if config_file:
+                bin_prefix = config_file.path[:-len(config_file.short_path)]
+                config_relative = bin_prefix + f.short_path
+                if config_relative != f.path:
+                    data_manifest[config_relative] = f_rlocation
+
+        data_manifest_file = ctx.actions.declare_file("{}_data_manifest.json".format(ctx.label.name))
+        ctx.actions.write(
+            output = data_manifest_file,
+            content = json.encode(data_manifest),
+        )
+        args.add("-data-manifest", data_manifest_file)
+        args.add("-output-rlocationpath", _rlocationpath(output, ctx.workspace_name))
+        extra_inputs.append(data_manifest_file)
+
     ctx.actions.run(
         mnemonic = "DockerComposeYamlConfig",
         executable = ctx.executable._merger,
         arguments = [args],
-        inputs = depset(yamls + image_inputs + image_manifests),
+        inputs = depset(yamls + image_inputs + image_manifests + data_inputs + extra_inputs),
         outputs = [output, out_lock],
         tools = toolchain.all_files,
     )
@@ -185,6 +210,7 @@ def _docker_compose_yaml_impl(ctx):
     yamls = _collect_yamls(yamls = ctx.attr.yamls)
 
     extra_yaml_files = []
+    config_file = None
     if ctx.attr.config:
         config_file = ctx.actions.declare_file("{}_config.json".format(ctx.label.name))
         ctx.actions.write(
@@ -192,6 +218,10 @@ def _docker_compose_yaml_impl(ctx):
             content = ctx.attr.config,
         )
         extra_yaml_files.append(config_file)
+
+    data_files = []
+    for target in ctx.attr.data:
+        data_files.extend(target[DefaultInfo].files.to_list())
 
     images = _collect_images(yamls = ctx.attr.yamls, images = ctx.attr.images)
 
@@ -215,18 +245,21 @@ def _docker_compose_yaml_impl(ctx):
         toolchain = toolchain,
         image_manifests = image_manifests,
         image_inputs = image_inputs,
+        data_inputs = data_files,
+        config_file = config_file,
     )
 
     return [
         DefaultInfo(
             files = depset([output]),
-            runfiles = ctx.runfiles(files = [output]),
+            runfiles = ctx.runfiles(files = [output] + data_files),
         ),
         DockerComposeYamlInfo(
             yaml = output,
             yaml_lock = lock,
             yaml_deps = yamls,
             images = ctx.attr.images,
+            data = depset(data_files),
         ),
     ]
 
@@ -302,6 +335,10 @@ docker_compose_yaml(
         "config": attr.string(
             doc = "A JSON-encoded docker-compose configuration string. Use `docker_compose_config()` to produce this value from structured Starlark dicts. Can be used alone or combined with `yamls`.",
         ),
+        "data": attr.label_list(
+            doc = "Additional files referenced by the docker-compose configuration (e.g. env_file, config files, secret files, bind-mount sources). These are made available during the merge action and propagated to consuming rules for runtime availability.",
+            allow_files = True,
+        ),
         "images": attr.label_list(
             doc = "Image loader targets that provide the container images referenced in the configuration. Each image referenced in the docker-compose config must have a corresponding loader target. See the rule documentation for supported loader types.",
             aspects = [image_load_repository_aspect],
@@ -345,6 +382,9 @@ def _docker_compose_binary_impl(ctx):
 
     args_file = ctx.actions.declare_file("{0}_data/{0}.args.txt".format(ctx.label.name))
     runfiles = ctx.runfiles(files = [args_file, yaml, lock], transitive_files = toolchain.all_files)
+
+    if info.data:
+        runfiles = runfiles.merge(ctx.runfiles(transitive_files = info.data))
 
     args = ctx.actions.args()
     args.set_param_file_format("multiline")
@@ -538,10 +578,12 @@ def _docker_compose_test_impl(ctx):
 
     images = _collect_images(yamls = ctx.attr.yamls, images = ctx.attr.images)
 
+    data_from_yaml = None
     if len(ctx.attr.yamls) == 1 and DockerComposeYamlInfo in ctx.attr.yamls[0]:
         info = ctx.attr.yamls[0][DockerComposeYamlInfo]
         yaml = info.yaml
         lock = info.yaml_lock
+        data_from_yaml = info.data
     else:
         yamls = _collect_yamls(yamls = ctx.attr.yamls)
 
@@ -581,6 +623,9 @@ def _docker_compose_test_impl(ctx):
 
     args_file = ctx.actions.declare_file("{0}_data/{0}.args.txt".format(ctx.label.name))
     runfiles = ctx.runfiles(files = [args_file, yaml, lock], transitive_files = toolchain.all_files)
+
+    if data_from_yaml:
+        runfiles = runfiles.merge(ctx.runfiles(transitive_files = data_from_yaml))
 
     args = ctx.actions.args()
     args.set_param_file_format("multiline")

@@ -1,0 +1,35 @@
+load("@bazel_skylib//rules:diff_test.bzl", "diff_test")
+load("//docker_compose:docker_compose_config.bzl", "docker_compose_config")
+load("//docker_compose:docker_compose_yaml.bzl", "docker_compose_yaml")
+
+docker_compose_yaml(
+    name = "yaml_env_file",
+    data = [".env"],
+    yamls = ["docker-compose.yaml"],
+)
+
+diff_test(
+    name = "yaml_env_file_diff_test",
+    file1 = "golden-yaml-env-file.yaml",
+    file2 = ":yaml_env_file",
+)
+
+docker_compose_yaml(
+    name = "starlark_env_file",
+    config = docker_compose_config(
+        services = {
+            "app": {
+                "environment": {"MY_VAR": "hello"},
+                "image": "nginx:latest",
+                "volumes": ["./.env:/app/.env:ro"],
+            },
+        },
+    ),
+    data = [".env"],
+)
+
+diff_test(
+    name = "starlark_env_file_diff_test",
+    file1 = "golden-starlark-env-file.yaml",
+    file2 = ":starlark_env_file",
+)

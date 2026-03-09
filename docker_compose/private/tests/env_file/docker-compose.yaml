@@ -1,0 +1,7 @@
+services:
+  app:
+    image: nginx:latest
+    env_file:
+      - .env
+    volumes:
+      - ./.env:/app/.env:ro

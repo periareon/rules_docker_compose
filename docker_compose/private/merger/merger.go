@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/periareon/rules_docker_compose/docker_compose/private/digest"
@@ -25,14 +26,66 @@ func normalizeLineEndings(data []byte) []byte {
 	return []byte(strings.ReplaceAll(string(data), "\r\n", "\n"))
 }
 
+// relativizePaths rewrites absolute execroot paths in the merged YAML to paths
+// relative to the output file's runfiles location. It uses a manifest that maps
+// each data file's execpath to its rlocationpath, ensuring correctness across the
+// execroot-to-runfiles boundary (where bazel-out/<config>/bin/ is stripped).
+func relativizePaths(yamlContent []byte, execrootPrefix string,
+	dataManifest map[string]string, outputRlocationDir string) []byte {
+
+	if execrootPrefix == "" || len(dataManifest) == 0 {
+		return yamlContent
+	}
+	execrootPrefix = filepath.Clean(execrootPrefix)
+	if !strings.HasSuffix(execrootPrefix, string(filepath.Separator)) {
+		execrootPrefix += string(filepath.Separator)
+	}
+	content := string(yamlContent)
+	escapedPrefix := regexp.QuoteMeta(execrootPrefix)
+	re := regexp.MustCompile(escapedPrefix + `([^:\s"'\n]*)`)
+	return []byte(re.ReplaceAllStringFunc(content, func(match string) string {
+		execpath := strings.TrimPrefix(match, execrootPrefix)
+
+		rlocationpath, ok := dataManifest[execpath]
+		if !ok {
+			debugLog("Path not in data manifest, leaving unchanged: %s", execpath)
+			return match
+		}
+
+		relPath, err := filepath.Rel(outputRlocationDir, rlocationpath)
+		if err != nil {
+			debugLog("Failed to relativize path %s: %v", execpath, err)
+			return match
+		}
+		relPath = filepath.ToSlash(relPath)
+		debugLog("Relativized path: %s -> %s (rlocation: %s)", execpath, relPath, rlocationpath)
+		return relPath
+	}))
+}
+
+// loadDataManifest reads a JSON file mapping execpaths to rlocationpaths.
+func loadDataManifest(path string) (map[string]string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read data manifest %s: %v", path, err)
+	}
+	var manifest map[string]string
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		return nil, fmt.Errorf("failed to parse data manifest %s: %v", path, err)
+	}
+	return manifest, nil
+}
+
 type Args struct {
-	DockerCompose  string
-	Output         string
-	OutputLock     string
-	ProjectName    string
-	DigestMode     string // "oci" or "docker"
-	Files          []string
-	ImageManifests []string
+	DockerCompose      string
+	Output             string
+	OutputLock         string
+	ProjectName        string
+	DigestMode         string // "oci" or "docker"
+	DataManifest       string
+	OutputRlocationpath string
+	Files              []string
+	ImageManifests     []string
 }
 
 type ImageManifest struct {
@@ -63,6 +116,8 @@ func parseArgs() (*Args, error) {
 	flag.StringVar(&args.OutputLock, "output-lock", "", "Path to output lock file (JSON mapping image tags to digests)")
 	flag.StringVar(&args.ProjectName, "project-name", "", "Project name for docker-compose")
 	flag.StringVar(&args.DigestMode, "digest-mode", "oci", "Digest mode: 'oci' uses manifest digest, 'docker' uses config digest (for docker load compatibility)")
+	flag.StringVar(&args.DataManifest, "data-manifest", "", "Path to JSON manifest mapping data file execpaths to rlocationpaths")
+	flag.StringVar(&args.OutputRlocationpath, "output-rlocationpath", "", "Rlocationpath of the output YAML file (for computing relative paths)")
 	var files flagArray
 	flag.Var(&files, "file", "Docker compose yaml file to merge (can be specified multiple times)")
 	var imageManifests flagArray
@@ -419,6 +474,24 @@ func main() {
 		os.Exit(1)
 	}
 	debugLog("docker-compose config completed, output size: %d bytes", len(output))
+
+	// Rewrite absolute execroot paths to relative paths so the YAML works from runfiles at runtime.
+	// Uses a manifest that maps data file execpaths to rlocationpaths for correctness.
+	if args.DataManifest != "" && args.OutputRlocationpath != "" {
+		dataManifest, err := loadDataManifest(args.DataManifest)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error loading data manifest: %v\n", err)
+			os.Exit(1)
+		}
+		debugLog("Loaded data manifest with %d entries", len(dataManifest))
+
+		execrootPrefix := ""
+		if cwd, err := os.Getwd(); err == nil {
+			execrootPrefix = filepath.Clean(cwd) + string(filepath.Separator)
+		}
+		outputRlocationDir := filepath.Dir(args.OutputRlocationpath)
+		output = relativizePaths(output, execrootPrefix, dataManifest, outputRlocationDir)
+	}
 
 	// Generate lock file if requested
 	if args.OutputLock != "" {

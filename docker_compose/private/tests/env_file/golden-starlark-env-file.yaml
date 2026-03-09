@@ -1,0 +1,17 @@
+name: 00__docker_compose_private_tests_env_file__starlark_env_file
+services:
+  app:
+    environment:
+      MY_VAR: hello
+    image: nginx:latest
+    networks:
+      default: null
+    volumes:
+      - type: bind
+        source: ../.env
+        target: /app/.env
+        read_only: true
+        bind: {}
+networks:
+  default:
+    name: 00__docker_compose_private_tests_env_file__starlark_env_file_default
