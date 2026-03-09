@@ -3,6 +3,48 @@
 load(":image_utils.bzl", "ImageLoadRepositoryInfo", "image_load_repository_aspect")
 load(":toolchain.bzl", "TOOLCHAIN_TYPE")
 
+def docker_compose_config(
+        services = {},
+        networks = {},
+        volumes = {},
+        configs = {},
+        secrets = {}):
+    """Encode a docker-compose configuration as a JSON string.
+
+    Parameters mirror the top-level keys of the
+    [Compose Specification](https://docs.docker.com/reference/compose-file/).
+    The returned string is suitable for passing to the `config` attribute
+    of `docker_compose_yaml`.
+
+    Args:
+        services: A dict mapping service names to their configuration dicts.
+            Each value follows the Compose `services.<name>` schema (image,
+            ports, environment, volumes, depends_on, etc.).
+        networks: A dict mapping network names to their configuration dicts.
+            Follows the Compose `networks.<name>` schema.
+        volumes: A dict mapping volume names to their configuration dicts.
+            Follows the Compose `volumes.<name>` schema.
+        configs: A dict mapping config names to their configuration dicts.
+            Follows the Compose `configs.<name>` schema.
+        secrets: A dict mapping secret names to their configuration dicts.
+            Follows the Compose `secrets.<name>` schema.
+
+    Returns:
+        A JSON-encoded string representing the docker-compose configuration.
+    """
+    compose = {}
+    if services:
+        compose["services"] = services
+    if networks:
+        compose["networks"] = networks
+    if volumes:
+        compose["volumes"] = volumes
+    if configs:
+        compose["configs"] = configs
+    if secrets:
+        compose["secrets"] = secrets
+    return json.encode(compose)
+
 DockerComposeYamlInfo = provider(
     doc = """\
 Provides information about a resolved docker-compose YAML configuration.
@@ -137,7 +179,19 @@ def _collect_images(*, yamls, images):
 def _docker_compose_yaml_impl(ctx):
     toolchain = ctx.toolchains[TOOLCHAIN_TYPE]
 
+    if not ctx.attr.yamls and not ctx.attr.config:
+        fail("At least one of `yamls` or `config` must be provided")
+
     yamls = _collect_yamls(yamls = ctx.attr.yamls)
+
+    extra_yaml_files = []
+    if ctx.attr.config:
+        config_file = ctx.actions.declare_file("{}_config.json".format(ctx.label.name))
+        ctx.actions.write(
+            output = config_file,
+            content = ctx.attr.config,
+        )
+        extra_yaml_files.append(config_file)
 
     images = _collect_images(yamls = ctx.attr.yamls, images = ctx.attr.images)
 
@@ -155,7 +209,7 @@ def _docker_compose_yaml_impl(ctx):
 
     _docker_compose_yaml_action(
         ctx = ctx,
-        yamls = yamls.to_list(),
+        yamls = yamls.to_list() + extra_yaml_files,
         output = output,
         out_lock = lock,
         toolchain = toolchain,
@@ -178,11 +232,16 @@ def _docker_compose_yaml_impl(ctx):
 
 docker_compose_yaml = rule(
     doc = """\
-Merges multiple docker-compose YAML files and validates image references.
+Merges docker-compose configurations and validates image references.
 
 This rule uses `docker-compose config` to merge one or more docker-compose YAML files
-into a single, canonical configuration. It also validates that all images referenced
-in the configuration have corresponding loader targets specified in the `images` attribute.
+(and/or an inline Starlark configuration) into a single, canonical configuration. It
+also validates that all images referenced in the configuration have corresponding loader
+targets specified in the `images` attribute.
+
+At least one of `yamls` or `config` must be provided. When both are given, they are
+merged together using `docker-compose config` (the `config` JSON is applied on top of
+the YAML files).
 
 A lock file is generated containing a mapping of image tags to their content digests,
 which can be used to verify that the correct images are loaded at runtime.
@@ -194,7 +253,7 @@ Supported image loader types:
 | [oci_load](https://github.com/bazel-contrib/rules_oci/blob/main/docs/load.md#oci_load) | rules_oci |
 | [image_load](https://github.com/bazel-contrib/rules_img/blob/main/docs/load.md#image_load) | rules_img |
 
-Example:
+Example with YAML files:
 ```python
 load("@rules_docker_compose//docker_compose:docker_compose_yaml.bzl", "docker_compose_yaml")
 load("@rules_oci//oci:defs.bzl", "oci_load")
@@ -211,21 +270,48 @@ docker_compose_yaml(
     images = [":my_image.load"],
 )
 ```
+
+Example with inline Starlark config:
+```python
+load("@rules_docker_compose//docker_compose:docker_compose_config.bzl", "docker_compose_config")
+load("@rules_docker_compose//docker_compose:docker_compose_yaml.bzl", "docker_compose_yaml")
+load("@rules_oci//oci:defs.bzl", "oci_load")
+
+oci_load(
+    name = "nginx.load",
+    image = ":nginx",
+    repo_tags = ["my-app/nginx:latest"],
+)
+
+docker_compose_yaml(
+    name = "compose",
+    config = docker_compose_config(
+        services = {
+            "web": {
+                "image": "my-app/nginx:latest",
+                "ports": ["8080:80"],
+            },
+        },
+    ),
+    images = [":nginx.load"],
+)
+```
 """,
     implementation = _docker_compose_yaml_impl,
     attrs = {
+        "config": attr.string(
+            doc = "A JSON-encoded docker-compose configuration string. Use `docker_compose_config()` to produce this value from structured Starlark dicts. Can be used alone or combined with `yamls`.",
+        ),
         "images": attr.label_list(
-            doc = "Image loader targets that provide the container images referenced in the YAML files. Each image referenced in the docker-compose YAML must have a corresponding loader target. See the rule documentation for supported loader types.",
+            doc = "Image loader targets that provide the container images referenced in the configuration. Each image referenced in the docker-compose config must have a corresponding loader target. See the rule documentation for supported loader types.",
             aspects = [image_load_repository_aspect],
         ),
         "out": attr.output(
             doc = "Optional output filename for the merged docker-compose YAML. Defaults to `{name}/docker-compose.yaml`.",
         ),
         "yamls": attr.label_list(
-            doc = "One or more docker-compose YAML files to merge. Files are merged in order using `docker-compose config`.",
+            doc = "One or more docker-compose YAML files to merge. Files are merged in order using `docker-compose config`. At least one of `yamls` or `config` must be provided.",
             allow_files = [".yaml", ".yml"],
-            mandatory = True,
-            allow_empty = False,
         ),
         "_merger": attr.label(
             cfg = "exec",
@@ -233,6 +319,134 @@ docker_compose_yaml(
             default = Label("//docker_compose/private/merger"),
         ),
     },
+    toolchains = [TOOLCHAIN_TYPE],
+)
+
+def _docker_compose_binary_impl(ctx):
+    toolchain = ctx.toolchains[TOOLCHAIN_TYPE]
+
+    info = ctx.attr.yaml[DockerComposeYamlInfo]
+    yaml = info.yaml
+    lock = info.yaml_lock
+
+    images = _collect_images(yamls = [ctx.attr.yaml], images = ctx.attr.images)
+
+    is_windows = ctx.executable._launcher.basename.endswith(".exe")
+    executable = ctx.actions.declare_file("{}{}".format(
+        ctx.label.name,
+        ".exe" if is_windows else "",
+    ))
+
+    ctx.actions.symlink(
+        output = executable,
+        target_file = ctx.executable._launcher,
+        is_executable = True,
+    )
+
+    args_file = ctx.actions.declare_file("{0}_data/{0}.args.txt".format(ctx.label.name))
+    runfiles = ctx.runfiles(files = [args_file, yaml, lock], transitive_files = toolchain.all_files)
+
+    args = ctx.actions.args()
+    args.set_param_file_format("multiline")
+    args.add("-docker-compose", _rlocationpath(toolchain.docker_compose, ctx.workspace_name))
+    args.add("-yaml", _rlocationpath(yaml, ctx.workspace_name))
+
+    for image in images:
+        image_info = image[ImageLoadRepositoryInfo]
+        runfiles = runfiles.merge(image_info.loader_runfiles)
+        args.add("-loader", _rlocationpath(image_info.loader, ctx.workspace_name))
+
+    ctx.actions.write(
+        output = args_file,
+        content = args,
+    )
+
+    workspace_name = ctx.label.workspace_name
+    if not workspace_name:
+        workspace_name = ctx.workspace_name
+
+    return [
+        DefaultInfo(
+            files = depset([executable]),
+            runfiles = runfiles,
+            executable = executable,
+        ),
+        RunEnvironmentInfo(
+            environment = {
+                "REPOSITORY_NAME": workspace_name,
+                "RULES_DOCKER_COMPOSE_ARGS_FILE": _rlocationpath(args_file, workspace_name),
+            },
+        ),
+    ]
+
+docker_compose_binary = rule(
+    doc = """\
+Creates a runnable target for invoking docker-compose with a generated configuration.
+
+This rule consumes a `docker_compose_yaml` target and produces an executable that:
+
+1. Loads container images into Docker using the specified loader targets
+2. Runs `docker-compose -f <yaml> <args...>` forwarding all command-line arguments
+
+Use this rule when you need to interactively manage docker-compose services
+(e.g. `bazel run :compose -- up -d`, `bazel run :compose -- down`).
+
+Supported image loader types:
+
+| Loader | Source |
+|--------|--------|
+| [oci_load](https://github.com/bazel-contrib/rules_oci/blob/main/docs/load.md#oci_load) | rules_oci |
+| [image_load](https://github.com/bazel-contrib/rules_img/blob/main/docs/load.md#image_load) | rules_img |
+
+Example:
+```python
+load("@rules_docker_compose//docker_compose:defs.bzl", "docker_compose_binary", "docker_compose_yaml")
+load("@rules_oci//oci:defs.bzl", "oci_load")
+
+oci_load(
+    name = "my_service.load",
+    image = ":my_service",
+    repo_tags = ["my-service:latest"],
+)
+
+docker_compose_yaml(
+    name = "compose_yaml",
+    yamls = ["docker-compose.yaml"],
+    images = [":my_service.load"],
+)
+
+docker_compose_binary(
+    name = "compose",
+    yaml = ":compose_yaml",
+    images = [":my_service.load"],
+)
+```
+
+Then run with:
+```bash
+bazel run :compose -- up -d
+bazel run :compose -- down
+bazel run :compose -- ps
+```
+""",
+    implementation = _docker_compose_binary_impl,
+    attrs = {
+        "images": attr.label_list(
+            doc = "Image loader targets that provide the container images for the docker-compose services. Each image will be loaded into Docker before docker-compose is invoked. See the rule documentation for supported loader types.",
+            aspects = [image_load_repository_aspect],
+        ),
+        "yaml": attr.label(
+            doc = "A `docker_compose_yaml` target providing the merged docker-compose configuration.",
+            mandatory = True,
+            providers = [DockerComposeYamlInfo],
+        ),
+        "_launcher": attr.label(
+            cfg = "exec",
+            executable = True,
+            default = Label("//docker_compose/private/launcher"),
+        ),
+    },
+    executable = True,
     toolchains = [TOOLCHAIN_TYPE],
 )
 

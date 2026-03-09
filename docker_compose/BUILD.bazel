@@ -3,9 +3,11 @@ load("//docker_compose/private:toolchain.bzl", "current_docker_compose_toolchain
 
 exports_files([
     "defs.bzl",
+    "docker_compose_binary.bzl",
+    "docker_compose_config.bzl",
     "docker_compose_test.bzl",
-    "docker_compose_yaml.bzl",
     "docker_compose_toolchain.bzl",
+    "docker_compose_yaml.bzl",
 ])
 
 toolchain_type(
@@ -29,10 +31,26 @@ bzl_library(
     srcs = ["defs.bzl"],
     visibility = ["//visibility:public"],
     deps = [
+        ":docker_compose_binary_bzl",
+        ":docker_compose_config_bzl",
         ":docker_compose_test_bzl",
         ":docker_compose_toolchain_bzl",
         ":docker_compose_yaml_bzl",
     ],
+)
+
+bzl_library(
+    name = "docker_compose_binary_bzl",
+    srcs = ["docker_compose_binary.bzl"],
+    visibility = ["//visibility:public"],
+    deps = ["//docker_compose/private:bzl_lib"],
+)
+
+bzl_library(
+    name = "docker_compose_config_bzl",
+    srcs = ["docker_compose_config.bzl"],
+    visibility = ["//visibility:public"],
+    deps = ["//docker_compose/private:bzl_lib"],
 )
 
 bzl_library(
