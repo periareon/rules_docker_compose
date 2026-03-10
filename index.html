@@ -175,7 +175,9 @@ register_toolchains(
 <h2 id="overview"><a class="header" href="#overview">Overview</a></h2>
 <p><code>rules_docker_compose</code> provides Bazel rules for integrating Docker-Compose into your build and test workflows. These rules enable you to:</p>
 <ul>
-<li><strong>Merge and validate docker-compose configurations</strong> using the <code>docker_compose_yaml</code> rule, which combines multiple YAML files and ensures all referenced images have corresponding loader targets</li>
+<li><strong>Merge and validate docker-compose configurations</strong> using the <code>docker_compose_yaml</code> rule, which combines multiple YAML files and/or inline Starlark configuration, and ensures all referenced images have corresponding loader targets</li>
+<li><strong>Define compose configurations in Starlark</strong> using the <code>docker_compose_config</code> helper, which provides structured parameters mirroring the Compose Specification (services, networks, volumes, configs, secrets)</li>
+<li><strong>Run docker-compose interactively</strong> with the <code>docker_compose_binary</code> rule, which loads images and forwards arguments to docker-compose (e.g. <code>bazel run :compose -- up -d</code>)</li>
 <li><strong>Run integration tests</strong> with the <code>docker_compose_test</code> rule, which automatically starts services, waits for them to be ready, runs your test binary, and cleans up containers</li>
 <li><strong>Verify image integrity</strong> through automatically generated lock files that map image tags to content digests, ensuring the correct images are loaded at runtime</li>
 </ul>

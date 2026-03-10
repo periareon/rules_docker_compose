@@ -159,10 +159,70 @@
 <h1 id="docker-compose"><a class="header" href="#docker-compose">Docker Compose</a></h1>
 <h2 id="rules"><a class="header" href="#rules">Rules</a></h2>
 <ul>
+<li><a href="#docker_compose_binary">docker_compose_binary</a></li>
 <li><a href="#docker_compose_test">docker_compose_test</a></li>
 <li><a href="#docker_compose_toolchain">docker_compose_toolchain</a></li>
 <li><a href="#docker_compose_yaml">docker_compose_yaml</a></li>
 </ul>
+<h2 id="functions"><a class="header" href="#functions">Functions</a></h2>
+<ul>
+<li><a href="#docker_compose_config">docker_compose_config</a></li>
+</ul>
+<p><a id="docker_compose_binary"></a></p>
+<h2 id="docker_compose_binary"><a class="header" href="#docker_compose_binary">docker_compose_binary</a></h2>
+<pre>
+load("@rules_docker_compose//docker_compose:defs.bzl", "docker_compose_binary")
+
+docker_compose_binary(<a href="#docker_compose_binary-name">name</a>, <a href="#docker_compose_binary-images">images</a>, <a href="#docker_compose_binary-yaml">yaml</a>)
+</pre>
+<p>Creates a runnable target for invoking docker-compose with a generated configuration.</p>
+<p>This rule consumes a <code>docker_compose_yaml</code> target and produces an executable that:</p>
+<ol>
+<li>Loads container images into Docker using the specified loader targets</li>
+<li>Runs <code>docker-compose -f &lt;yaml&gt; &lt;args...&gt;</code> forwarding all command-line arguments</li>
+</ol>
+<p>Use this rule when you need to interactively manage docker-compose services
+(e.g. <code>bazel run :compose -- up -d</code>, <code>bazel run :compose -- down</code>).</p>
+<p>Supported image loader types:</p>
+<div class="table-wrapper"><table><thead><tr><th>Loader</th><th>Source</th></tr></thead><tbody>
+<tr><td><a href="https://github.com/bazel-contrib/rules_oci/blob/main/docs/load.md#oci_load">oci_load</a></td><td>rules_oci</td></tr>
+<tr><td><a href="https://github.com/bazel-contrib/rules_img/blob/main/docs/load.md#image_load">image_load</a></td><td>rules_img</td></tr>
+</tbody></table>
+</div>
+<p>Example:</p>
+<pre><code class="language-python">load("@rules_docker_compose//docker_compose:defs.bzl", "docker_compose_binary", "docker_compose_yaml")
+load("@rules_oci//oci:defs.bzl", "oci_load")
+
+oci_load(
+    name = "my_service.load",
+    image = ":my_service",
+    repo_tags = ["my-service:latest"],
+)
+
+docker_compose_yaml(
+    name = "compose_yaml",
+    yamls = ["docker-compose.yaml"],
+    images = [":my_service.load"],
+)
+
+docker_compose_binary(
+    name = "compose",
+    yaml = ":compose_yaml",
+    images = [":my_service.load"],
+)
+</code></pre>
+<p>Then run with:</p>
+<pre><code class="language-bash">bazel run :compose -- up -d
+bazel run :compose -- down
+bazel run :compose -- ps
+</code></pre>
+<p><strong>ATTRIBUTES</strong></p>
+<div class="table-wrapper"><table><thead><tr><th style="text-align: left">Name</th><th style="text-align: left">Description</th><th style="text-align: left">Type</th><th style="text-align: left">Mandatory</th><th style="text-align: left">Default</th></tr></thead><tbody>
+<tr><td style="text-align: left"><a id="docker_compose_binary-name"></a>name</td><td style="text-align: left">A unique name for this target.</td><td style="text-align: left"><a href="https://bazel.build/concepts/labels#target-names">Name</a></td><td style="text-align: left">required</td><td style="text-align: left"></td></tr>
+<tr><td style="text-align: left"><a id="docker_compose_binary-images"></a>images</td><td style="text-align: left">Image loader targets that provide the container images for the docker-compose services. Each image will be loaded into Docker before docker-compose is invoked. See the rule documentation for supported loader types.</td><td style="text-align: left"><a href="https://bazel.build/concepts/labels">List of labels</a></td><td style="text-align: left">optional</td><td style="text-align: left"><code>[]</code></td></tr>
+<tr><td style="text-align: left"><a id="docker_compose_binary-yaml"></a>yaml</td><td style="text-align: left">A <code>docker_compose_yaml</code> target providing the merged docker-compose configuration.</td><td style="text-align: left"><a href="https://bazel.build/concepts/labels">Label</a></td><td style="text-align: left">required</td><td style="text-align: left"></td></tr>
+</tbody></table>
+</div>
 <p><a id="docker_compose_test"></a></p>
 <h2 id="docker_compose_test"><a class="header" href="#docker_compose_test">docker_compose_test</a></h2>
 <pre>
@@ -298,12 +358,16 @@ docker_compose_toolchain(
 <pre>
 load("@rules_docker_compose//docker_compose:defs.bzl", "docker_compose_yaml")
 
-docker_compose_yaml(<a href="#docker_compose_yaml-name">name</a>, <a href="#docker_compose_yaml-out">out</a>, <a href="#docker_compose_yaml-images">images</a>, <a href="#docker_compose_yaml-yamls">yamls</a>)
+docker_compose_yaml(<a href="#docker_compose_yaml-name">name</a>, <a href="#docker_compose_yaml-data">data</a>, <a href="#docker_compose_yaml-out">out</a>, <a href="#docker_compose_yaml-config">config</a>, <a href="#docker_compose_yaml-images">images</a>, <a href="#docker_compose_yaml-yamls">yamls</a>)
 </pre>
-<p>Merges multiple docker-compose YAML files and validates image references.</p>
+<p>Merges docker-compose configurations and validates image references.</p>
 <p>This rule uses <code>docker-compose config</code> to merge one or more docker-compose YAML files
-into a single, canonical configuration. It also validates that all images referenced
-in the configuration have corresponding loader targets specified in the <code>images</code> attribute.</p>
+(and/or an inline Starlark configuration) into a single, canonical configuration. It
+also validates that all images referenced in the configuration have corresponding loader
+targets specified in the <code>images</code> attribute.</p>
+<p>At least one of <code>yamls</code> or <code>config</code> must be provided. When both are given, they are
+merged together using <code>docker-compose config</code> (the <code>config</code> JSON is applied on top of
+the YAML files).</p>
 <p>A lock file is generated containing a mapping of image tags to their content digests,
 which can be used to verify that the correct images are loaded at runtime.</p>
 <p>Supported image loader types:</p>
@@ -312,7 +376,7 @@ which can be used to verify that the correct images are loaded at runtime.</p>
 <tr><td><a href="https://github.com/bazel-contrib/rules_img/blob/main/docs/load.md#image_load">image_load</a></td><td>rules_img</td></tr>
 </tbody></table>
 </div>
-<p>Example:</p>
+<p>Example with YAML files:</p>
 <pre><code class="language-python">load("@rules_docker_compose//docker_compose:docker_compose_yaml.bzl", "docker_compose_yaml")
 load("@rules_oci//oci:defs.bzl", "oci_load")
 
@@ -328,14 +392,64 @@ docker_compose_yaml(
     images = [":my_image.load"],
 )
 </code></pre>
+<p>Example with inline Starlark config:</p>
+<pre><code class="language-python">load("@rules_docker_compose//docker_compose:docker_compose_config.bzl", "docker_compose_config")
+load("@rules_docker_compose//docker_compose:docker_compose_yaml.bzl", "docker_compose_yaml")
+load("@rules_oci//oci:defs.bzl", "oci_load")
+
+oci_load(
+    name = "nginx.load",
+    image = ":nginx",
+    repo_tags = ["my-app/nginx:latest"],
+)
+
+docker_compose_yaml(
+    name = "compose",
+    config = docker_compose_config(
+        services = {
+            "web": {
+                "image": "my-app/nginx:latest",
+                "ports": ["8080:80"],
+            },
+        },
+    ),
+    images = [":nginx.load"],
+)
+</code></pre>
 <p><strong>ATTRIBUTES</strong></p>
 <div class="table-wrapper"><table><thead><tr><th style="text-align: left">Name</th><th style="text-align: left">Description</th><th style="text-align: left">Type</th><th style="text-align: left">Mandatory</th><th style="text-align: left">Default</th></tr></thead><tbody>
 <tr><td style="text-align: left"><a id="docker_compose_yaml-name"></a>name</td><td style="text-align: left">A unique name for this target.</td><td style="text-align: left"><a href="https://bazel.build/concepts/labels#target-names">Name</a></td><td style="text-align: left">required</td><td style="text-align: left"></td></tr>
+<tr><td style="text-align: left"><a id="docker_compose_yaml-data"></a>data</td><td style="text-align: left">Additional files referenced by the docker-compose configuration (e.g. env_file, config files, secret files, bind-mount sources). These are made available during the merge action and propagated to consuming rules for runtime availability.</td><td style="text-align: left"><a href="https://bazel.build/concepts/labels">List of labels</a></td><td style="text-align: left">optional</td><td style="text-align: left"><code>[]</code></td></tr>
 <tr><td style="text-align: left"><a id="docker_compose_yaml-out"></a>out</td><td style="text-align: left">Optional output filename for the merged docker-compose YAML. Defaults to <code>{name}/docker-compose.yaml</code>.</td><td style="text-align: left"><a href="https://bazel.build/concepts/labels">Label</a>; <a href="https://bazel.build/reference/be/common-definitions#configurable-attributes">nonconfigurable</a></td><td style="text-align: left">optional</td><td style="text-align: left"><code>None</code></td></tr>
-<tr><td style="text-align: left"><a id="docker_compose_yaml-images"></a>images</td><td style="text-align: left">Image loader targets that provide the container images referenced in the YAML files. Each image referenced in the docker-compose YAML must have a corresponding loader target. See the rule documentation for supported loader types.</td><td style="text-align: left"><a href="https://bazel.build/concepts/labels">List of labels</a></td><td style="text-align: left">optional</td><td style="text-align: left"><code>[]</code></td></tr>
-<tr><td style="text-align: left"><a id="docker_compose_yaml-yamls"></a>yamls</td><td style="text-align: left">One or more docker-compose YAML files to merge. Files are merged in order using <code>docker-compose config</code>.</td><td style="text-align: left"><a href="https://bazel.build/concepts/labels">List of labels</a></td><td style="text-align: left">required</td><td style="text-align: left"></td></tr>
+<tr><td style="text-align: left"><a id="docker_compose_yaml-config"></a>config</td><td style="text-align: left">A JSON-encoded docker-compose configuration string. Use <code>docker_compose_config()</code> to produce this value from structured Starlark dicts. Can be used alone or combined with <code>yamls</code>.</td><td style="text-align: left">String</td><td style="text-align: left">optional</td><td style="text-align: left"><code>""</code></td></tr>
+<tr><td style="text-align: left"><a id="docker_compose_yaml-images"></a>images</td><td style="text-align: left">Image loader targets that provide the container images referenced in the configuration. Each image referenced in the docker-compose config must have a corresponding loader target. See the rule documentation for supported loader types.</td><td style="text-align: left"><a href="https://bazel.build/concepts/labels">List of labels</a></td><td style="text-align: left">optional</td><td style="text-align: left"><code>[]</code></td></tr>
+<tr><td style="text-align: left"><a id="docker_compose_yaml-yamls"></a>yamls</td><td style="text-align: left">One or more docker-compose YAML files to merge. Files are merged in order using <code>docker-compose config</code>. At least one of <code>yamls</code> or <code>config</code> must be provided.</td><td style="text-align: left"><a href="https://bazel.build/concepts/labels">List of labels</a></td><td style="text-align: left">optional</td><td style="text-align: left"><code>[]</code></td></tr>
 </tbody></table>
 </div>
+<p><a id="docker_compose_config"></a></p>
+<h2 id="docker_compose_config"><a class="header" href="#docker_compose_config">docker_compose_config</a></h2>
+<pre>
+load("@rules_docker_compose//docker_compose:defs.bzl", "docker_compose_config")
+
+docker_compose_config(<a href="#docker_compose_config-services">services</a>, <a href="#docker_compose_config-networks">networks</a>, <a href="#docker_compose_config-volumes">volumes</a>, <a href="#docker_compose_config-configs">configs</a>, <a href="#docker_compose_config-secrets">secrets</a>)
+</pre>
+<p>Encode a docker-compose configuration as a JSON string.</p>
+<p>Parameters mirror the top-level keys of the
+<a href="https://docs.docker.com/reference/compose-file/">Compose Specification</a>.
+The returned string is suitable for passing to the <code>config</code> attribute
+of <code>docker_compose_yaml</code>.</p>
+<p><strong>PARAMETERS</strong></p>
+<div class="table-wrapper"><table><thead><tr><th style="text-align: left">Name</th><th style="text-align: left">Description</th><th style="text-align: left">Default Value</th></tr></thead><tbody>
+<tr><td style="text-align: left"><a id="docker_compose_config-services"></a>services</td><td style="text-align: left">A dict mapping service names to their configuration dicts. Each value follows the Compose <code>services.&lt;name&gt;</code> schema (image, ports, environment, volumes, depends_on, etc.).</td><td style="text-align: left"><code>{}</code></td></tr>
+<tr><td style="text-align: left"><a id="docker_compose_config-networks"></a>networks</td><td style="text-align: left">A dict mapping network names to their configuration dicts. Follows the Compose <code>networks.&lt;name&gt;</code> schema.</td><td style="text-align: left"><code>{}</code></td></tr>
+<tr><td style="text-align: left"><a id="docker_compose_config-volumes"></a>volumes</td><td style="text-align: left">A dict mapping volume names to their configuration dicts. Follows the Compose <code>volumes.&lt;name&gt;</code> schema.</td><td style="text-align: left"><code>{}</code></td></tr>
+<tr><td style="text-align: left"><a id="docker_compose_config-configs"></a>configs</td><td style="text-align: left">A dict mapping config names to their configuration dicts. Follows the Compose <code>configs.&lt;name&gt;</code> schema.</td><td style="text-align: left"><code>{}</code></td></tr>
+<tr><td style="text-align: left"><a id="docker_compose_config-secrets"></a>secrets</td><td style="text-align: left">A dict mapping secret names to their configuration dicts. Follows the Compose <code>secrets.&lt;name&gt;</code> schema.</td><td style="text-align: left"><code>{}</code></td></tr>
+</tbody></table>
+</div>
+<p><strong>RETURNS</strong></p>
+<p>A JSON-encoded string representing the docker-compose configuration.</p>
+
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
