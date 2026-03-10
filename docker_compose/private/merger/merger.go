@@ -30,21 +30,30 @@ func normalizeLineEndings(data []byte) []byte {
 // relative to the output file's runfiles location. It uses a manifest that maps
 // each data file's execpath to its rlocationpath, ensuring correctness across the
 // execroot-to-runfiles boundary (where bazel-out/<config>/bin/ is stripped).
+//
+// Path separators are normalized to forward slashes so the regex and manifest
+// lookups work consistently on both Unix and Windows, where docker-compose may
+// emit backslash-separated absolute paths.
 func relativizePaths(yamlContent []byte, execrootPrefix string,
 	dataManifest map[string]string, outputRlocationDir string) []byte {
 
 	if execrootPrefix == "" || len(dataManifest) == 0 {
 		return yamlContent
 	}
-	execrootPrefix = filepath.Clean(execrootPrefix)
-	if !strings.HasSuffix(execrootPrefix, string(filepath.Separator)) {
-		execrootPrefix += string(filepath.Separator)
+	// Normalize prefix to forward slashes for cross-platform consistency
+	execrootPrefix = filepath.ToSlash(filepath.Clean(execrootPrefix))
+	if !strings.HasSuffix(execrootPrefix, "/") {
+		execrootPrefix += "/"
 	}
 	content := string(yamlContent)
+	// Build a regex that matches both / and \ as separators so we find paths
+	// regardless of how docker-compose wrote them (OS-dependent).
 	escapedPrefix := regexp.QuoteMeta(execrootPrefix)
+	escapedPrefix = strings.ReplaceAll(escapedPrefix, "/", `[/\\]`)
 	re := regexp.MustCompile(escapedPrefix + `([^:\s"'\n]*)`)
 	return []byte(re.ReplaceAllStringFunc(content, func(match string) string {
-		execpath := strings.TrimPrefix(match, execrootPrefix)
+		// Normalize the matched path to forward slashes before lookup
+		execpath := strings.TrimPrefix(filepath.ToSlash(match), execrootPrefix)
 
 		rlocationpath, ok := dataManifest[execpath]
 		if !ok {
@@ -52,7 +61,7 @@ func relativizePaths(yamlContent []byte, execrootPrefix string,
 			return match
 		}
 
-		relPath, err := filepath.Rel(outputRlocationDir, rlocationpath)
+		relPath, err := filepath.Rel(filepath.FromSlash(outputRlocationDir), filepath.FromSlash(rlocationpath))
 		if err != nil {
 			debugLog("Failed to relativize path %s: %v", execpath, err)
 			return match
@@ -77,15 +86,15 @@ func loadDataManifest(path string) (map[string]string, error) {
 }
 
 type Args struct {
-	DockerCompose      string
-	Output             string
-	OutputLock         string
-	ProjectName        string
-	DigestMode         string // "oci" or "docker"
-	DataManifest       string
+	DockerCompose       string
+	Output              string
+	OutputLock          string
+	ProjectName         string
+	DigestMode          string // "oci" or "docker"
+	DataManifest        string
 	OutputRlocationpath string
-	Files              []string
-	ImageManifests     []string
+	Files               []string
+	ImageManifests      []string
 }
 
 type ImageManifest struct {
