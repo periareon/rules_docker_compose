@@ -3,18 +3,78 @@ load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
 load("@stardoc//stardoc:stardoc.bzl", "stardoc")
 
 stardoc(
-    name = "rules",
-    out = "src/rules.md",
+    name = "defs",
+    out = "src/defs.md",
     input = "//docker_compose:defs.bzl",
     table_of_contents_template = "@stardoc//stardoc:templates/markdown_tables/table_of_contents.vm",
     tags = ["manual"],
     deps = ["//docker_compose:defs_bzl"],
 )
 
+stardoc(
+    name = "docker_compose_binary",
+    out = "src/docker_compose_binary.md",
+    input = "//docker_compose:docker_compose_binary.bzl",
+    table_of_contents_template = "@stardoc//stardoc:templates/markdown_tables/table_of_contents.vm",
+    tags = ["manual"],
+    deps = ["//docker_compose:docker_compose_binary_bzl"],
+)
+
+stardoc(
+    name = "docker_compose_config",
+    out = "src/docker_compose_config.md",
+    input = "//docker_compose:docker_compose_config.bzl",
+    table_of_contents_template = "@stardoc//stardoc:templates/markdown_tables/table_of_contents.vm",
+    tags = ["manual"],
+    deps = ["//docker_compose:docker_compose_config_bzl"],
+)
+
+stardoc(
+    name = "docker_compose_test",
+    out = "src/docker_compose_test.md",
+    input = "//docker_compose:docker_compose_test.bzl",
+    table_of_contents_template = "@stardoc//stardoc:templates/markdown_tables/table_of_contents.vm",
+    tags = ["manual"],
+    deps = ["//docker_compose:docker_compose_test_bzl"],
+)
+
+stardoc(
+    name = "docker_compose_toolchain",
+    out = "src/docker_compose_toolchain.md",
+    input = "//docker_compose:docker_compose_toolchain.bzl",
+    table_of_contents_template = "@stardoc//stardoc:templates/markdown_tables/table_of_contents.vm",
+    tags = ["manual"],
+    deps = ["//docker_compose:docker_compose_toolchain_bzl"],
+)
+
+stardoc(
+    name = "docker_compose_yaml",
+    out = "src/docker_compose_yaml.md",
+    input = "//docker_compose:docker_compose_yaml.bzl",
+    table_of_contents_template = "@stardoc//stardoc:templates/markdown_tables/table_of_contents.vm",
+    tags = ["manual"],
+    deps = ["//docker_compose:docker_compose_yaml_bzl"],
+)
+
+stardoc(
+    name = "extensions",
+    out = "src/extensions.md",
+    input = "//docker_compose:extensions.bzl",
+    table_of_contents_template = "@stardoc//stardoc:templates/markdown_tables/table_of_contents.vm",
+    tags = ["manual"],
+    deps = ["//docker_compose:extensions_bzl"],
+)
+
 mdbook(
     name = "book",
     srcs = glob(["src/**/*.md"]) + [
-        ":rules",
+        ":defs",
+        ":docker_compose_binary",
+        ":docker_compose_config",
+        ":docker_compose_test",
+        ":docker_compose_toolchain",
+        ":docker_compose_yaml",
+        ":extensions",
     ],
     book = "book.toml",
     # Windows builds are typically super slow in CI so they're avoided.
