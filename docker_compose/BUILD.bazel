@@ -8,6 +8,7 @@ exports_files([
     "docker_compose_test.bzl",
     "docker_compose_toolchain.bzl",
     "docker_compose_yaml.bzl",
+    "extensions.bzl",
 ])
 
 toolchain_type(
@@ -70,6 +71,13 @@ bzl_library(
 bzl_library(
     name = "docker_compose_yaml_bzl",
     srcs = ["docker_compose_yaml.bzl"],
+    visibility = ["//visibility:public"],
+    deps = ["//docker_compose/private:bzl_lib"],
+)
+
+bzl_library(
+    name = "extensions_bzl",
+    srcs = ["extensions.bzl"],
     visibility = ["//visibility:public"],
     deps = ["//docker_compose/private:bzl_lib"],
 )
