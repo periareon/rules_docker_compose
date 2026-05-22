@@ -27,14 +27,19 @@ register_toolchains(
     "@docker_compose_toolchains//:all",
 )
 
-# TODO: https://github.com/bazel-contrib/rules_oci/issues/575
-# `aspect_bazel_lib` is unfortunately required by `rules_oci`
-bazel_dep(name = "aspect_bazel_lib", version = "2.20.0", dev_dependency = True)
-bazel_dep(name = "rules_oci", version = "2.2.6", dev_dependency = True)
-bazel_dep(name = "rules_img", version = "0.3.2", dev_dependency = True)
+bazel_dep(name = "rules_oci", version = "2.3.0", dev_dependency = True)
+bazel_dep(name = "rules_img", version = "0.3.9", dev_dependency = True)
 bazel_dep(name = "stardoc", version = "0.8.0", dev_dependency = True)
-bazel_dep(name = "rules_rust_mdbook", version = "0.69.0", dev_dependency = True)
+bazel_dep(name = "rules_rust_mdbook", version = "0.70.0", dev_dependency = True)
 bazel_dep(name = "rules_shell", version = "0.6.1", dev_dependency = True)
+
+# This override can be dropped when https://github.com/bazel-contrib/rules_oci/pull/891 is released.
+single_version_override(
+    module_name = "rules_oci",
+    patch_strip = 1,
+    patches = ["//tools/rules_oci:rules_oci.patch"],
+    version = "2.3.0",
+)
 
 img = use_extension("@rules_img//img:extensions.bzl", "images", dev_dependency = True)
 img.pull(

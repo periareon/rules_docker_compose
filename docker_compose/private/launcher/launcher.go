@@ -126,12 +126,18 @@ func main() {
 
 	// Load images
 	if len(args.Loaders) > 0 {
+		rf, err := runfiles.New()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to load runfiles: %v\n", err)
+			os.Exit(1)
+		}
 		debugLog("Running %d image loader(s)", len(args.Loaders))
 		for i, loader := range args.Loaders {
 			debugLog("Running loader %d: %s", i+1, loader)
 			loaderCmd := exec.Command(loader)
 			loaderCmd.Stdout = os.Stderr
 			loaderCmd.Stderr = os.Stderr
+			loaderCmd.Env = append(os.Environ(), rf.Env()...)
 			if err := loaderCmd.Run(); err != nil {
 				fmt.Fprintf(os.Stderr, "Error running image loader %s: %v\n", loader, err)
 				os.Exit(1)
