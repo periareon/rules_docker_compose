@@ -203,25 +203,26 @@ register_toolchains(
 </li>
 </ul>
 <p>Consider using these rules when you need to test interactions with real services, but prefer lighter-weight alternatives for fast, hermetic unit tests.</p>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="docker-compose-rules"><a class="header" href="#docker-compose-rules">Docker-Compose Rules</a></h1>
+<ul>
+<li><a href="./docker_compose_binary.html#docker_compose_binary">docker_compose_binary</a></li>
+<li><a href="./docker_compose_test.html#docker_compose_test">docker_compose_test</a></li>
+<li><a href="./docker_compose_toolchain.html#docker_compose_toolchain">docker_compose_toolchain</a></li>
+<li><a href="./docker_compose_yaml.html#docker_compose_yaml">docker_compose_yaml</a></li>
+<li><a href="./docker_compose_config.html#docker_compose_config">docker_compose_config</a></li>
+</ul>
 <div style="break-before: page; page-break-before: always;"></div><!-- Generated with Stardoc: http://skydoc.bazel.build -->
-<h1 id="docker-compose"><a class="header" href="#docker-compose">Docker Compose</a></h1>
+<h1 id="docker_compose_binary"><a class="header" href="#docker_compose_binary">docker_compose_binary</a></h1>
 <h2 id="rules"><a class="header" href="#rules">Rules</a></h2>
 <ul>
-<li><a href="rules.html#docker_compose_binary">docker_compose_binary</a></li>
-<li><a href="rules.html#docker_compose_test">docker_compose_test</a></li>
-<li><a href="rules.html#docker_compose_toolchain">docker_compose_toolchain</a></li>
-<li><a href="rules.html#docker_compose_yaml">docker_compose_yaml</a></li>
-</ul>
-<h2 id="functions"><a class="header" href="#functions">Functions</a></h2>
-<ul>
-<li><a href="rules.html#docker_compose_config">docker_compose_config</a></li>
+<li><a href="docker_compose_binary.html#docker_compose_binary">docker_compose_binary</a></li>
 </ul>
 <p><a id="docker_compose_binary"></a></p>
-<h2 id="docker_compose_binary"><a class="header" href="#docker_compose_binary">docker_compose_binary</a></h2>
+<h2 id="docker_compose_binary-1"><a class="header" href="#docker_compose_binary-1">docker_compose_binary</a></h2>
 <pre>
-load("@rules_docker_compose//docker_compose:defs.bzl", "docker_compose_binary")
+load("@rules_docker_compose//docker_compose:docker_compose_binary.bzl", "docker_compose_binary")
 
-docker_compose_binary(<a href="rules.html#docker_compose_binary-name">name</a>, <a href="rules.html#docker_compose_binary-images">images</a>, <a href="rules.html#docker_compose_binary-yaml">yaml</a>)
+docker_compose_binary(<a href="docker_compose_binary.html#docker_compose_binary-name">name</a>, <a href="docker_compose_binary.html#docker_compose_binary-images">images</a>, <a href="docker_compose_binary.html#docker_compose_binary-yaml">yaml</a>)
 </pre>
 <p>Creates a runnable target for invoking docker-compose with a generated configuration.</p>
 <p>This rule consumes a <code>docker_compose_yaml</code> target and produces an executable that:</p>
@@ -270,13 +271,18 @@ bazel run :compose -- ps
 <tr><td style="text-align: left"><a id="docker_compose_binary-images"></a>images</td><td style="text-align: left">Image loader targets that provide the container images for the docker-compose services. Each image will be loaded into Docker before docker-compose is invoked. See the rule documentation for supported loader types.</td><td style="text-align: left"><a href="https://bazel.build/concepts/labels">List of labels</a></td><td style="text-align: left">optional</td><td style="text-align: left"><code>[]</code></td></tr>
 <tr><td style="text-align: left"><a id="docker_compose_binary-yaml"></a>yaml</td><td style="text-align: left">A <code>docker_compose_yaml</code> target providing the merged docker-compose configuration.</td><td style="text-align: left"><a href="https://bazel.build/concepts/labels">Label</a></td><td style="text-align: left">required</td><td style="text-align: left"></td></tr>
 </tbody></table>
-</div>
+</div><div style="break-before: page; page-break-before: always;"></div><!-- Generated with Stardoc: http://skydoc.bazel.build -->
+<h1 id="docker_compose_test"><a class="header" href="#docker_compose_test">docker_compose_test</a></h1>
+<h2 id="rules-1"><a class="header" href="#rules-1">Rules</a></h2>
+<ul>
+<li><a href="docker_compose_test.html#docker_compose_test">docker_compose_test</a></li>
+</ul>
 <p><a id="docker_compose_test"></a></p>
-<h2 id="docker_compose_test"><a class="header" href="#docker_compose_test">docker_compose_test</a></h2>
+<h2 id="docker_compose_test-1"><a class="header" href="#docker_compose_test-1">docker_compose_test</a></h2>
 <pre>
-load("@rules_docker_compose//docker_compose:defs.bzl", "docker_compose_test")
+load("@rules_docker_compose//docker_compose:docker_compose_test.bzl", "docker_compose_test")
 
-docker_compose_test(<a href="rules.html#docker_compose_test-name">name</a>, <a href="rules.html#docker_compose_test-data">data</a>, <a href="rules.html#docker_compose_test-delay">delay</a>, <a href="rules.html#docker_compose_test-env">env</a>, <a href="rules.html#docker_compose_test-env_inherit">env_inherit</a>, <a href="rules.html#docker_compose_test-images">images</a>, <a href="rules.html#docker_compose_test-test">test</a>, <a href="rules.html#docker_compose_test-test_args">test_args</a>, <a href="rules.html#docker_compose_test-yamls">yamls</a>)
+docker_compose_test(<a href="docker_compose_test.html#docker_compose_test-name">name</a>, <a href="docker_compose_test.html#docker_compose_test-data">data</a>, <a href="docker_compose_test.html#docker_compose_test-delay">delay</a>, <a href="docker_compose_test.html#docker_compose_test-env">env</a>, <a href="docker_compose_test.html#docker_compose_test-env_inherit">env_inherit</a>, <a href="docker_compose_test.html#docker_compose_test-images">images</a>, <a href="docker_compose_test.html#docker_compose_test-test">test</a>, <a href="docker_compose_test.html#docker_compose_test-test_args">test_args</a>, <a href="docker_compose_test.html#docker_compose_test-yamls">yamls</a>)
 </pre>
 <p>Runs a test with docker-compose services.</p>
 <p>This rule starts docker-compose services, waits for them to be ready, runs a test binary,
@@ -327,13 +333,18 @@ docker_compose_test(
 <tr><td style="text-align: left"><a id="docker_compose_test-test_args"></a>test_args</td><td style="text-align: left">Arguments to pass to the test binary.</td><td style="text-align: left">List of strings</td><td style="text-align: left">optional</td><td style="text-align: left"><code>[]</code></td></tr>
 <tr><td style="text-align: left"><a id="docker_compose_test-yamls"></a>yamls</td><td style="text-align: left">One or more docker-compose YAML files defining the services to run. Files are merged using <code>docker-compose config</code>.</td><td style="text-align: left"><a href="https://bazel.build/concepts/labels">List of labels</a></td><td style="text-align: left">optional</td><td style="text-align: left"><code>[]</code></td></tr>
 </tbody></table>
-</div>
+</div><div style="break-before: page; page-break-before: always;"></div><!-- Generated with Stardoc: http://skydoc.bazel.build -->
+<h1 id="docker_compose_toolchain"><a class="header" href="#docker_compose_toolchain">docker_compose_toolchain</a></h1>
+<h2 id="rules-2"><a class="header" href="#rules-2">Rules</a></h2>
+<ul>
+<li><a href="docker_compose_toolchain.html#docker_compose_toolchain">docker_compose_toolchain</a></li>
+</ul>
 <p><a id="docker_compose_toolchain"></a></p>
-<h2 id="docker_compose_toolchain"><a class="header" href="#docker_compose_toolchain">docker_compose_toolchain</a></h2>
+<h2 id="docker_compose_toolchain-1"><a class="header" href="#docker_compose_toolchain-1">docker_compose_toolchain</a></h2>
 <pre>
-load("@rules_docker_compose//docker_compose:defs.bzl", "docker_compose_toolchain")
+load("@rules_docker_compose//docker_compose:docker_compose_toolchain.bzl", "docker_compose_toolchain")
 
-docker_compose_toolchain(<a href="rules.html#docker_compose_toolchain-name">name</a>, <a href="rules.html#docker_compose_toolchain-digest_mode">digest_mode</a>, <a href="rules.html#docker_compose_toolchain-docker_compose">docker_compose</a>, <a href="rules.html#docker_compose_toolchain-version">version</a>)
+docker_compose_toolchain(<a href="docker_compose_toolchain.html#docker_compose_toolchain-name">name</a>, <a href="docker_compose_toolchain.html#docker_compose_toolchain-digest_mode">digest_mode</a>, <a href="docker_compose_toolchain.html#docker_compose_toolchain-docker_compose">docker_compose</a>, <a href="docker_compose_toolchain.html#docker_compose_toolchain-version">version</a>)
 </pre>
 <p>A toolchain for providing Docker-Compose to Bazel rules.</p>
 <p>The <code>digest_mode</code> attribute controls how image digests are computed for lock files:</p>
@@ -400,13 +411,18 @@ docker_compose_toolchain(
 <tr><td style="text-align: left"><a id="docker_compose_toolchain-docker_compose"></a>docker_compose</td><td style="text-align: left">The docker-compose executable.</td><td style="text-align: left"><a href="https://bazel.build/concepts/labels">Label</a></td><td style="text-align: left">required</td><td style="text-align: left"></td></tr>
 <tr><td style="text-align: left"><a id="docker_compose_toolchain-version"></a>version</td><td style="text-align: left">The version of docker-compose.</td><td style="text-align: left">String</td><td style="text-align: left">required</td><td style="text-align: left"></td></tr>
 </tbody></table>
-</div>
+</div><div style="break-before: page; page-break-before: always;"></div><!-- Generated with Stardoc: http://skydoc.bazel.build -->
+<h1 id="docker_compose_yaml"><a class="header" href="#docker_compose_yaml">docker_compose_yaml</a></h1>
+<h2 id="rules-3"><a class="header" href="#rules-3">Rules</a></h2>
+<ul>
+<li><a href="docker_compose_yaml.html#docker_compose_yaml">docker_compose_yaml</a></li>
+</ul>
 <p><a id="docker_compose_yaml"></a></p>
-<h2 id="docker_compose_yaml"><a class="header" href="#docker_compose_yaml">docker_compose_yaml</a></h2>
+<h2 id="docker_compose_yaml-1"><a class="header" href="#docker_compose_yaml-1">docker_compose_yaml</a></h2>
 <pre>
-load("@rules_docker_compose//docker_compose:defs.bzl", "docker_compose_yaml")
+load("@rules_docker_compose//docker_compose:docker_compose_yaml.bzl", "docker_compose_yaml")
 
-docker_compose_yaml(<a href="rules.html#docker_compose_yaml-name">name</a>, <a href="rules.html#docker_compose_yaml-data">data</a>, <a href="rules.html#docker_compose_yaml-out">out</a>, <a href="rules.html#docker_compose_yaml-config">config</a>, <a href="rules.html#docker_compose_yaml-images">images</a>, <a href="rules.html#docker_compose_yaml-yamls">yamls</a>)
+docker_compose_yaml(<a href="docker_compose_yaml.html#docker_compose_yaml-name">name</a>, <a href="docker_compose_yaml.html#docker_compose_yaml-data">data</a>, <a href="docker_compose_yaml.html#docker_compose_yaml-out">out</a>, <a href="docker_compose_yaml.html#docker_compose_yaml-config">config</a>, <a href="docker_compose_yaml.html#docker_compose_yaml-images">images</a>, <a href="docker_compose_yaml.html#docker_compose_yaml-yamls">yamls</a>)
 </pre>
 <p>Merges docker-compose configurations and validates image references.</p>
 <p>This rule uses <code>docker-compose config</code> to merge one or more docker-compose YAML files
@@ -473,13 +489,18 @@ docker_compose_yaml(
 <tr><td style="text-align: left"><a id="docker_compose_yaml-images"></a>images</td><td style="text-align: left">Image loader targets that provide the container images referenced in the configuration. Each image referenced in the docker-compose config must have a corresponding loader target. See the rule documentation for supported loader types.</td><td style="text-align: left"><a href="https://bazel.build/concepts/labels">List of labels</a></td><td style="text-align: left">optional</td><td style="text-align: left"><code>[]</code></td></tr>
 <tr><td style="text-align: left"><a id="docker_compose_yaml-yamls"></a>yamls</td><td style="text-align: left">One or more docker-compose YAML files to merge. Files are merged in order using <code>docker-compose config</code>. At least one of <code>yamls</code> or <code>config</code> must be provided.</td><td style="text-align: left"><a href="https://bazel.build/concepts/labels">List of labels</a></td><td style="text-align: left">optional</td><td style="text-align: left"><code>[]</code></td></tr>
 </tbody></table>
-</div>
+</div><div style="break-before: page; page-break-before: always;"></div><!-- Generated with Stardoc: http://skydoc.bazel.build -->
+<h1 id="docker_compose_config"><a class="header" href="#docker_compose_config">docker_compose_config</a></h1>
+<h2 id="functions"><a class="header" href="#functions">Functions</a></h2>
+<ul>
+<li><a href="docker_compose_config.html#docker_compose_config">docker_compose_config</a></li>
+</ul>
 <p><a id="docker_compose_config"></a></p>
-<h2 id="docker_compose_config"><a class="header" href="#docker_compose_config">docker_compose_config</a></h2>
+<h2 id="docker_compose_config-1"><a class="header" href="#docker_compose_config-1">docker_compose_config</a></h2>
 <pre>
-load("@rules_docker_compose//docker_compose:defs.bzl", "docker_compose_config")
+load("@rules_docker_compose//docker_compose:docker_compose_config.bzl", "docker_compose_config")
 
-docker_compose_config(<a href="rules.html#docker_compose_config-services">services</a>, <a href="rules.html#docker_compose_config-networks">networks</a>, <a href="rules.html#docker_compose_config-volumes">volumes</a>, <a href="rules.html#docker_compose_config-configs">configs</a>, <a href="rules.html#docker_compose_config-secrets">secrets</a>)
+docker_compose_config(<a href="docker_compose_config.html#docker_compose_config-services">services</a>, <a href="docker_compose_config.html#docker_compose_config-networks">networks</a>, <a href="docker_compose_config.html#docker_compose_config-volumes">volumes</a>, <a href="docker_compose_config.html#docker_compose_config-configs">configs</a>, <a href="docker_compose_config.html#docker_compose_config-secrets">secrets</a>)
 </pre>
 <p>Encode a docker-compose configuration as a JSON string.</p>
 <p>Parameters mirror the top-level keys of the
@@ -497,6 +518,18 @@ of <code>docker_compose_yaml</code>.</p>
 </div>
 <p><strong>RETURNS</strong></p>
 <p>A JSON-encoded string representing the docker-compose configuration.</p>
+<div style="break-before: page; page-break-before: always;"></div><!-- Generated with Stardoc: http://skydoc.bazel.build -->
+<p>Docker-Compose bzlmod extensions</p>
+<h2 id="module-extensions"><a class="header" href="#module-extensions">Module Extensions</a></h2>
+<ul>
+<li><a href="extensions.html#docker_compose">docker_compose</a></li>
+</ul>
+<p><a id="docker_compose"></a></p>
+<h2 id="docker_compose"><a class="header" href="#docker_compose">docker_compose</a></h2>
+<pre>
+docker_compose = use_extension("@rules_docker_compose//docker_compose:extensions.bzl", "docker_compose")
+</pre>
+<p>Bzlmod extensions for Docker-Compose</p>
 
                     </main>
 

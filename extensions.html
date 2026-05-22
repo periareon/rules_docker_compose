@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>Rules - rules_docker_compose</title>
+        <title>Extensions - rules_docker_compose</title>
 
 
         <!-- Custom HTML head -->
@@ -155,26 +155,27 @@
 
                 <div id="content" class="content">
                     <main>
-                        <h1 id="docker-compose-rules"><a class="header" href="#docker-compose-rules">Docker-Compose Rules</a></h1>
+                        <!-- Generated with Stardoc: http://skydoc.bazel.build -->
+<p>Docker-Compose bzlmod extensions</p>
+<h2 id="module-extensions"><a class="header" href="#module-extensions">Module Extensions</a></h2>
 <ul>
-<li><a href="./docker_compose_binary.html#docker_compose_binary">docker_compose_binary</a></li>
-<li><a href="./docker_compose_test.html#docker_compose_test">docker_compose_test</a></li>
-<li><a href="./docker_compose_toolchain.html#docker_compose_toolchain">docker_compose_toolchain</a></li>
-<li><a href="./docker_compose_yaml.html#docker_compose_yaml">docker_compose_yaml</a></li>
-<li><a href="./docker_compose_config.html#docker_compose_config">docker_compose_config</a></li>
+<li><a href="#docker_compose">docker_compose</a></li>
 </ul>
+<p><a id="docker_compose"></a></p>
+<h2 id="docker_compose"><a class="header" href="#docker_compose">docker_compose</a></h2>
+<pre>
+docker_compose = use_extension("@rules_docker_compose//docker_compose:extensions.bzl", "docker_compose")
+</pre>
+<p>Bzlmod extensions for Docker-Compose</p>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="index.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="docker_compose_config.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <i class="fa fa-angle-left"></i>
                             </a>
 
-                            <a rel="next prefetch" href="docker_compose_binary.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
-                                <i class="fa fa-angle-right"></i>
-                            </a>
 
                         <div style="clear: both"></div>
                     </nav>
@@ -182,13 +183,10 @@
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="index.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="docker_compose_config.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <i class="fa fa-angle-left"></i>
                     </a>
 
-                    <a rel="next prefetch" href="docker_compose_binary.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
-                        <i class="fa fa-angle-right"></i>
-                    </a>
             </nav>
 
         </div>

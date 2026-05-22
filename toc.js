@@ -8,7 +8,7 @@ class MDBookSidebarScrollbox extends HTMLElement {
         super();
     }
     connectedCallback() {
-        this.innerHTML = '<ol class="chapter"><li class="chapter-item expanded affix "><a href="index.html">Introduction</a></li><li class="chapter-item expanded affix "><li class="spacer"></li><li class="chapter-item expanded "><a href="rules.html"><strong aria-hidden="true">1.</strong> Rules</a></li></ol>';
+        this.innerHTML = '<ol class="chapter"><li class="chapter-item expanded affix "><a href="index.html">Introduction</a></li><li class="chapter-item expanded affix "><li class="spacer"></li><li class="chapter-item expanded "><a href="rules.html"><strong aria-hidden="true">1.</strong> Rules</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="docker_compose_binary.html"><strong aria-hidden="true">1.1.</strong> docker_compose_binary</a></li><li class="chapter-item expanded "><a href="docker_compose_test.html"><strong aria-hidden="true">1.2.</strong> docker_compose_test</a></li><li class="chapter-item expanded "><a href="docker_compose_toolchain.html"><strong aria-hidden="true">1.3.</strong> docker_compose_toolchain</a></li><li class="chapter-item expanded "><a href="docker_compose_yaml.html"><strong aria-hidden="true">1.4.</strong> docker_compose_yaml</a></li><li class="chapter-item expanded "><a href="docker_compose_config.html"><strong aria-hidden="true">1.5.</strong> docker_compose_config</a></li></ol></li><li class="chapter-item expanded "><a href="extensions.html"><strong aria-hidden="true">2.</strong> Extensions</a></li></ol>';
         // Set the current, active page, and reveal it if it's hidden
         let current_page = document.location.href.toString().split("#")[0];
         if (current_page.endsWith("/")) {

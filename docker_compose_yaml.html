@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>Rules - rules_docker_compose</title>
+        <title>docker_compose_yaml - rules_docker_compose</title>
 
 
         <!-- Custom HTML head -->
@@ -155,24 +155,94 @@
 
                 <div id="content" class="content">
                     <main>
-                        <h1 id="docker-compose-rules"><a class="header" href="#docker-compose-rules">Docker-Compose Rules</a></h1>
+                        <!-- Generated with Stardoc: http://skydoc.bazel.build -->
+<h1 id="docker_compose_yaml"><a class="header" href="#docker_compose_yaml">docker_compose_yaml</a></h1>
+<h2 id="rules"><a class="header" href="#rules">Rules</a></h2>
 <ul>
-<li><a href="./docker_compose_binary.html#docker_compose_binary">docker_compose_binary</a></li>
-<li><a href="./docker_compose_test.html#docker_compose_test">docker_compose_test</a></li>
-<li><a href="./docker_compose_toolchain.html#docker_compose_toolchain">docker_compose_toolchain</a></li>
-<li><a href="./docker_compose_yaml.html#docker_compose_yaml">docker_compose_yaml</a></li>
-<li><a href="./docker_compose_config.html#docker_compose_config">docker_compose_config</a></li>
+<li><a href="#docker_compose_yaml">docker_compose_yaml</a></li>
 </ul>
+<p><a id="docker_compose_yaml"></a></p>
+<h2 id="docker_compose_yaml-1"><a class="header" href="#docker_compose_yaml-1">docker_compose_yaml</a></h2>
+<pre>
+load("@rules_docker_compose//docker_compose:docker_compose_yaml.bzl", "docker_compose_yaml")
 
+docker_compose_yaml(<a href="#docker_compose_yaml-name">name</a>, <a href="#docker_compose_yaml-data">data</a>, <a href="#docker_compose_yaml-out">out</a>, <a href="#docker_compose_yaml-config">config</a>, <a href="#docker_compose_yaml-images">images</a>, <a href="#docker_compose_yaml-yamls">yamls</a>)
+</pre>
+<p>Merges docker-compose configurations and validates image references.</p>
+<p>This rule uses <code>docker-compose config</code> to merge one or more docker-compose YAML files
+(and/or an inline Starlark configuration) into a single, canonical configuration. It
+also validates that all images referenced in the configuration have corresponding loader
+targets specified in the <code>images</code> attribute.</p>
+<p>At least one of <code>yamls</code> or <code>config</code> must be provided. When both are given, they are
+merged together using <code>docker-compose config</code> (the <code>config</code> JSON is applied on top of
+the YAML files).</p>
+<p>A lock file is generated containing a mapping of image tags to their content digests,
+which can be used to verify that the correct images are loaded at runtime.</p>
+<p>Supported image loader types:</p>
+<div class="table-wrapper"><table><thead><tr><th>Loader</th><th>Source</th></tr></thead><tbody>
+<tr><td><a href="https://github.com/bazel-contrib/rules_oci/blob/main/docs/load.md#oci_load">oci_load</a></td><td>rules_oci</td></tr>
+<tr><td><a href="https://github.com/bazel-contrib/rules_img/blob/main/docs/load.md#image_load">image_load</a></td><td>rules_img</td></tr>
+</tbody></table>
+</div>
+<p>Example with YAML files:</p>
+<pre><code class="language-python">load("@rules_docker_compose//docker_compose:docker_compose_yaml.bzl", "docker_compose_yaml")
+load("@rules_oci//oci:defs.bzl", "oci_load")
+
+oci_load(
+    name = "my_image.load",
+    image = ":my_image",
+    repo_tags = ["my-app:latest"],
+)
+
+docker_compose_yaml(
+    name = "compose",
+    yamls = ["docker-compose.yaml"],
+    images = [":my_image.load"],
+)
+</code></pre>
+<p>Example with inline Starlark config:</p>
+<pre><code class="language-python">load("@rules_docker_compose//docker_compose:docker_compose_config.bzl", "docker_compose_config")
+load("@rules_docker_compose//docker_compose:docker_compose_yaml.bzl", "docker_compose_yaml")
+load("@rules_oci//oci:defs.bzl", "oci_load")
+
+oci_load(
+    name = "nginx.load",
+    image = ":nginx",
+    repo_tags = ["my-app/nginx:latest"],
+)
+
+docker_compose_yaml(
+    name = "compose",
+    config = docker_compose_config(
+        services = {
+            "web": {
+                "image": "my-app/nginx:latest",
+                "ports": ["8080:80"],
+            },
+        },
+    ),
+    images = [":nginx.load"],
+)
+</code></pre>
+<p><strong>ATTRIBUTES</strong></p>
+<div class="table-wrapper"><table><thead><tr><th style="text-align: left">Name</th><th style="text-align: left">Description</th><th style="text-align: left">Type</th><th style="text-align: left">Mandatory</th><th style="text-align: left">Default</th></tr></thead><tbody>
+<tr><td style="text-align: left"><a id="docker_compose_yaml-name"></a>name</td><td style="text-align: left">A unique name for this target.</td><td style="text-align: left"><a href="https://bazel.build/concepts/labels#target-names">Name</a></td><td style="text-align: left">required</td><td style="text-align: left"></td></tr>
+<tr><td style="text-align: left"><a id="docker_compose_yaml-data"></a>data</td><td style="text-align: left">Additional files referenced by the docker-compose configuration (e.g. env_file, config files, secret files, bind-mount sources). These are made available during the merge action and propagated to consuming rules for runtime availability.</td><td style="text-align: left"><a href="https://bazel.build/concepts/labels">List of labels</a></td><td style="text-align: left">optional</td><td style="text-align: left"><code>[]</code></td></tr>
+<tr><td style="text-align: left"><a id="docker_compose_yaml-out"></a>out</td><td style="text-align: left">Optional output filename for the merged docker-compose YAML. Defaults to <code>{name}/docker-compose.yaml</code>.</td><td style="text-align: left"><a href="https://bazel.build/concepts/labels">Label</a>; <a href="https://bazel.build/reference/be/common-definitions#configurable-attributes">nonconfigurable</a></td><td style="text-align: left">optional</td><td style="text-align: left"><code>None</code></td></tr>
+<tr><td style="text-align: left"><a id="docker_compose_yaml-config"></a>config</td><td style="text-align: left">A JSON-encoded docker-compose configuration string. Use <code>docker_compose_config()</code> to produce this value from structured Starlark dicts. Can be used alone or combined with <code>yamls</code>.</td><td style="text-align: left">String</td><td style="text-align: left">optional</td><td style="text-align: left"><code>""</code></td></tr>
+<tr><td style="text-align: left"><a id="docker_compose_yaml-images"></a>images</td><td style="text-align: left">Image loader targets that provide the container images referenced in the configuration. Each image referenced in the docker-compose config must have a corresponding loader target. See the rule documentation for supported loader types.</td><td style="text-align: left"><a href="https://bazel.build/concepts/labels">List of labels</a></td><td style="text-align: left">optional</td><td style="text-align: left"><code>[]</code></td></tr>
+<tr><td style="text-align: left"><a id="docker_compose_yaml-yamls"></a>yamls</td><td style="text-align: left">One or more docker-compose YAML files to merge. Files are merged in order using <code>docker-compose config</code>. At least one of <code>yamls</code> or <code>config</code> must be provided.</td><td style="text-align: left"><a href="https://bazel.build/concepts/labels">List of labels</a></td><td style="text-align: left">optional</td><td style="text-align: left"><code>[]</code></td></tr>
+</tbody></table>
+</div>
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="index.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="docker_compose_toolchain.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <i class="fa fa-angle-left"></i>
                             </a>
 
-                            <a rel="next prefetch" href="docker_compose_binary.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="docker_compose_config.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <i class="fa fa-angle-right"></i>
                             </a>
 
@@ -182,11 +252,11 @@
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="index.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="docker_compose_toolchain.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <i class="fa fa-angle-left"></i>
                     </a>
 
-                    <a rel="next prefetch" href="docker_compose_binary.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="docker_compose_config.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <i class="fa fa-angle-right"></i>
                     </a>
             </nav>

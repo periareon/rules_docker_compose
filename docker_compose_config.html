@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>Rules - rules_docker_compose</title>
+        <title>docker_compose_config - rules_docker_compose</title>
 
 
         <!-- Custom HTML head -->
@@ -155,24 +155,45 @@
 
                 <div id="content" class="content">
                     <main>
-                        <h1 id="docker-compose-rules"><a class="header" href="#docker-compose-rules">Docker-Compose Rules</a></h1>
+                        <!-- Generated with Stardoc: http://skydoc.bazel.build -->
+<h1 id="docker_compose_config"><a class="header" href="#docker_compose_config">docker_compose_config</a></h1>
+<h2 id="functions"><a class="header" href="#functions">Functions</a></h2>
 <ul>
-<li><a href="./docker_compose_binary.html#docker_compose_binary">docker_compose_binary</a></li>
-<li><a href="./docker_compose_test.html#docker_compose_test">docker_compose_test</a></li>
-<li><a href="./docker_compose_toolchain.html#docker_compose_toolchain">docker_compose_toolchain</a></li>
-<li><a href="./docker_compose_yaml.html#docker_compose_yaml">docker_compose_yaml</a></li>
-<li><a href="./docker_compose_config.html#docker_compose_config">docker_compose_config</a></li>
+<li><a href="#docker_compose_config">docker_compose_config</a></li>
 </ul>
+<p><a id="docker_compose_config"></a></p>
+<h2 id="docker_compose_config-1"><a class="header" href="#docker_compose_config-1">docker_compose_config</a></h2>
+<pre>
+load("@rules_docker_compose//docker_compose:docker_compose_config.bzl", "docker_compose_config")
+
+docker_compose_config(<a href="#docker_compose_config-services">services</a>, <a href="#docker_compose_config-networks">networks</a>, <a href="#docker_compose_config-volumes">volumes</a>, <a href="#docker_compose_config-configs">configs</a>, <a href="#docker_compose_config-secrets">secrets</a>)
+</pre>
+<p>Encode a docker-compose configuration as a JSON string.</p>
+<p>Parameters mirror the top-level keys of the
+<a href="https://docs.docker.com/reference/compose-file/">Compose Specification</a>.
+The returned string is suitable for passing to the <code>config</code> attribute
+of <code>docker_compose_yaml</code>.</p>
+<p><strong>PARAMETERS</strong></p>
+<div class="table-wrapper"><table><thead><tr><th style="text-align: left">Name</th><th style="text-align: left">Description</th><th style="text-align: left">Default Value</th></tr></thead><tbody>
+<tr><td style="text-align: left"><a id="docker_compose_config-services"></a>services</td><td style="text-align: left">A dict mapping service names to their configuration dicts. Each value follows the Compose <code>services.&lt;name&gt;</code> schema (image, ports, environment, volumes, depends_on, etc.).</td><td style="text-align: left"><code>{}</code></td></tr>
+<tr><td style="text-align: left"><a id="docker_compose_config-networks"></a>networks</td><td style="text-align: left">A dict mapping network names to their configuration dicts. Follows the Compose <code>networks.&lt;name&gt;</code> schema.</td><td style="text-align: left"><code>{}</code></td></tr>
+<tr><td style="text-align: left"><a id="docker_compose_config-volumes"></a>volumes</td><td style="text-align: left">A dict mapping volume names to their configuration dicts. Follows the Compose <code>volumes.&lt;name&gt;</code> schema.</td><td style="text-align: left"><code>{}</code></td></tr>
+<tr><td style="text-align: left"><a id="docker_compose_config-configs"></a>configs</td><td style="text-align: left">A dict mapping config names to their configuration dicts. Follows the Compose <code>configs.&lt;name&gt;</code> schema.</td><td style="text-align: left"><code>{}</code></td></tr>
+<tr><td style="text-align: left"><a id="docker_compose_config-secrets"></a>secrets</td><td style="text-align: left">A dict mapping secret names to their configuration dicts. Follows the Compose <code>secrets.&lt;name&gt;</code> schema.</td><td style="text-align: left"><code>{}</code></td></tr>
+</tbody></table>
+</div>
+<p><strong>RETURNS</strong></p>
+<p>A JSON-encoded string representing the docker-compose configuration.</p>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="index.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="docker_compose_yaml.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <i class="fa fa-angle-left"></i>
                             </a>
 
-                            <a rel="next prefetch" href="docker_compose_binary.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="extensions.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <i class="fa fa-angle-right"></i>
                             </a>
 
@@ -182,11 +203,11 @@
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="index.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="docker_compose_yaml.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <i class="fa fa-angle-left"></i>
                     </a>
 
-                    <a rel="next prefetch" href="docker_compose_binary.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="extensions.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <i class="fa fa-angle-right"></i>
                     </a>
             </nav>

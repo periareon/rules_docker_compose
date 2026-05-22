@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>Rules - rules_docker_compose</title>
+        <title>docker_compose_test - rules_docker_compose</title>
 
 
         <!-- Custom HTML head -->
@@ -155,24 +155,78 @@
 
                 <div id="content" class="content">
                     <main>
-                        <h1 id="docker-compose-rules"><a class="header" href="#docker-compose-rules">Docker-Compose Rules</a></h1>
+                        <!-- Generated with Stardoc: http://skydoc.bazel.build -->
+<h1 id="docker_compose_test"><a class="header" href="#docker_compose_test">docker_compose_test</a></h1>
+<h2 id="rules"><a class="header" href="#rules">Rules</a></h2>
 <ul>
-<li><a href="./docker_compose_binary.html#docker_compose_binary">docker_compose_binary</a></li>
-<li><a href="./docker_compose_test.html#docker_compose_test">docker_compose_test</a></li>
-<li><a href="./docker_compose_toolchain.html#docker_compose_toolchain">docker_compose_toolchain</a></li>
-<li><a href="./docker_compose_yaml.html#docker_compose_yaml">docker_compose_yaml</a></li>
-<li><a href="./docker_compose_config.html#docker_compose_config">docker_compose_config</a></li>
+<li><a href="#docker_compose_test">docker_compose_test</a></li>
 </ul>
+<p><a id="docker_compose_test"></a></p>
+<h2 id="docker_compose_test-1"><a class="header" href="#docker_compose_test-1">docker_compose_test</a></h2>
+<pre>
+load("@rules_docker_compose//docker_compose:docker_compose_test.bzl", "docker_compose_test")
 
+docker_compose_test(<a href="#docker_compose_test-name">name</a>, <a href="#docker_compose_test-data">data</a>, <a href="#docker_compose_test-delay">delay</a>, <a href="#docker_compose_test-env">env</a>, <a href="#docker_compose_test-env_inherit">env_inherit</a>, <a href="#docker_compose_test-images">images</a>, <a href="#docker_compose_test-test">test</a>, <a href="#docker_compose_test-test_args">test_args</a>, <a href="#docker_compose_test-yamls">yamls</a>)
+</pre>
+<p>Runs a test with docker-compose services.</p>
+<p>This rule starts docker-compose services, waits for them to be ready, runs a test binary,
+and then tears down the services. The test lifecycle is:</p>
+<ol>
+<li>Loading container images into Docker using the specified loader targets</li>
+<li>Starting services with <code>docker-compose up</code></li>
+<li>Waiting for containers to be running (with health checks)</li>
+<li>Verifying image digests match the expected values from the lock file</li>
+<li>Running the test binary with optional arguments</li>
+<li>Cleaning up with <code>docker-compose down</code></li>
+</ol>
+<p>The test requires network access and Docker to be available on the host.</p>
+<p>Supported image loader types:</p>
+<div class="table-wrapper"><table><thead><tr><th>Loader</th><th>Source</th></tr></thead><tbody>
+<tr><td><a href="https://github.com/bazel-contrib/rules_oci/blob/main/docs/load.md#oci_load">oci_load</a></td><td>rules_oci</td></tr>
+<tr><td><a href="https://github.com/bazel-contrib/rules_img/blob/main/docs/load.md#image_load">image_load</a></td><td>rules_img</td></tr>
+</tbody></table>
+</div>
+<p>Example:</p>
+<pre><code class="language-python">load("@rules_docker_compose//docker_compose:docker_compose_test.bzl", "docker_compose_test")
+load("@rules_oci//oci:defs.bzl", "oci_load")
+
+oci_load(
+    name = "my_service.load",
+    image = ":my_service",
+    repo_tags = ["my-service:latest"],
+)
+
+docker_compose_test(
+    name = "integration_test",
+    yamls = ["docker-compose.yaml"],
+    images = [":my_service.load"],
+    test = ":my_test_binary",
+    test_args = ["-host", "localhost:8080"],
+    delay = 2,  # Wait 2 seconds after containers start
+)
+</code></pre>
+<p><strong>ATTRIBUTES</strong></p>
+<div class="table-wrapper"><table><thead><tr><th style="text-align: left">Name</th><th style="text-align: left">Description</th><th style="text-align: left">Type</th><th style="text-align: left">Mandatory</th><th style="text-align: left">Default</th></tr></thead><tbody>
+<tr><td style="text-align: left"><a id="docker_compose_test-name"></a>name</td><td style="text-align: left">A unique name for this target.</td><td style="text-align: left"><a href="https://bazel.build/concepts/labels#target-names">Name</a></td><td style="text-align: left">required</td><td style="text-align: left"></td></tr>
+<tr><td style="text-align: left"><a id="docker_compose_test-data"></a>data</td><td style="text-align: left">Additional runtime dependencies for the test.</td><td style="text-align: left"><a href="https://bazel.build/concepts/labels">List of labels</a></td><td style="text-align: left">optional</td><td style="text-align: left"><code>[]</code></td></tr>
+<tr><td style="text-align: left"><a id="docker_compose_test-delay"></a>delay</td><td style="text-align: left">Seconds to wait after containers are running before executing the test. Useful for services that need initialization time beyond their health checks.</td><td style="text-align: left">Integer</td><td style="text-align: left">optional</td><td style="text-align: left"><code>1</code></td></tr>
+<tr><td style="text-align: left"><a id="docker_compose_test-env"></a>env</td><td style="text-align: left">Dictionary of strings; values are subject to <code>$(location)</code> and "Make variable" substitution</td><td style="text-align: left"><a href="https://bazel.build/rules/lib/dict">Dictionary: String -&gt; String</a></td><td style="text-align: left">optional</td><td style="text-align: left"><code>{}</code></td></tr>
+<tr><td style="text-align: left"><a id="docker_compose_test-env_inherit"></a>env_inherit</td><td style="text-align: left">Specifies additional environment variables to inherit from the external environment when the test is executed by <code>bazel test</code>.</td><td style="text-align: left">List of strings</td><td style="text-align: left">optional</td><td style="text-align: left"><code>[]</code></td></tr>
+<tr><td style="text-align: left"><a id="docker_compose_test-images"></a>images</td><td style="text-align: left">Image loader targets that provide the container images for the docker-compose services. Each image will be loaded into Docker before <code>docker-compose up</code> is called. See the rule documentation for supported loader types.</td><td style="text-align: left"><a href="https://bazel.build/concepts/labels">List of labels</a></td><td style="text-align: left">optional</td><td style="text-align: left"><code>[]</code></td></tr>
+<tr><td style="text-align: left"><a id="docker_compose_test-test"></a>test</td><td style="text-align: left">The test binary to execute after containers are running. The binary will receive arguments from <code>test_args</code>.</td><td style="text-align: left"><a href="https://bazel.build/concepts/labels">Label</a></td><td style="text-align: left">optional</td><td style="text-align: left"><code>None</code></td></tr>
+<tr><td style="text-align: left"><a id="docker_compose_test-test_args"></a>test_args</td><td style="text-align: left">Arguments to pass to the test binary.</td><td style="text-align: left">List of strings</td><td style="text-align: left">optional</td><td style="text-align: left"><code>[]</code></td></tr>
+<tr><td style="text-align: left"><a id="docker_compose_test-yamls"></a>yamls</td><td style="text-align: left">One or more docker-compose YAML files defining the services to run. Files are merged using <code>docker-compose config</code>.</td><td style="text-align: left"><a href="https://bazel.build/concepts/labels">List of labels</a></td><td style="text-align: left">optional</td><td style="text-align: left"><code>[]</code></td></tr>
+</tbody></table>
+</div>
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="index.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="docker_compose_binary.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <i class="fa fa-angle-left"></i>
                             </a>
 
-                            <a rel="next prefetch" href="docker_compose_binary.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="docker_compose_toolchain.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <i class="fa fa-angle-right"></i>
                             </a>
 
@@ -182,11 +236,11 @@
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="index.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="docker_compose_binary.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <i class="fa fa-angle-left"></i>
                     </a>
 
-                    <a rel="next prefetch" href="docker_compose_binary.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="docker_compose_toolchain.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <i class="fa fa-angle-right"></i>
                     </a>
             </nav>
