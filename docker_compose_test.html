@@ -172,10 +172,10 @@ docker_compose_test(<a href="#docker_compose_test-name">name</a>, <a href="#dock
 <p>This rule starts docker-compose services, waits for them to be ready, runs a test binary,
 and then tears down the services. The test lifecycle is:</p>
 <ol>
-<li>Loading container images into Docker using the specified loader targets</li>
-<li>Starting services with <code>docker-compose up</code></li>
+<li>Loading container images into Docker (under a per-original-tag daemon-level lock)
+and retagging each loaded image to a content-derived unique tag</li>
+<li>Starting services with <code>docker-compose up</code> against the unique-tag-rewritten YAML</li>
 <li>Waiting for containers to be running (with health checks)</li>
-<li>Verifying image digests match the expected values from the lock file</li>
 <li>Running the test binary with optional arguments</li>
 <li>Cleaning up with <code>docker-compose down</code></li>
 </ol>

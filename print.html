@@ -288,10 +288,10 @@ docker_compose_test(<a href="docker_compose_test.html#docker_compose_test-name">
 <p>This rule starts docker-compose services, waits for them to be ready, runs a test binary,
 and then tears down the services. The test lifecycle is:</p>
 <ol>
-<li>Loading container images into Docker using the specified loader targets</li>
-<li>Starting services with <code>docker-compose up</code></li>
+<li>Loading container images into Docker (under a per-original-tag daemon-level lock)
+and retagging each loaded image to a content-derived unique tag</li>
+<li>Starting services with <code>docker-compose up</code> against the unique-tag-rewritten YAML</li>
 <li>Waiting for containers to be running (with health checks)</li>
-<li>Verifying image digests match the expected values from the lock file</li>
 <li>Running the test binary with optional arguments</li>
 <li>Cleaning up with <code>docker-compose down</code></li>
 </ol>
@@ -344,18 +344,9 @@ docker_compose_test(
 <pre>
 load("@rules_docker_compose//docker_compose:docker_compose_toolchain.bzl", "docker_compose_toolchain")
 
-docker_compose_toolchain(<a href="docker_compose_toolchain.html#docker_compose_toolchain-name">name</a>, <a href="docker_compose_toolchain.html#docker_compose_toolchain-digest_mode">digest_mode</a>, <a href="docker_compose_toolchain.html#docker_compose_toolchain-docker_compose">docker_compose</a>, <a href="docker_compose_toolchain.html#docker_compose_toolchain-version">version</a>)
+docker_compose_toolchain(<a href="docker_compose_toolchain.html#docker_compose_toolchain-name">name</a>, <a href="docker_compose_toolchain.html#docker_compose_toolchain-docker_compose">docker_compose</a>, <a href="docker_compose_toolchain.html#docker_compose_toolchain-version">version</a>)
 </pre>
 <p>A toolchain for providing Docker-Compose to Bazel rules.</p>
-<p>The <code>digest_mode</code> attribute controls how image digests are computed for lock files:</p>
-<div class="table-wrapper"><table><thead><tr><th>Mode</th><th>Description</th></tr></thead><tbody>
-<tr><td><code>oci</code></td><td>Uses the OCI manifest digest directly from the image's index.json. Use this when images are pushed to an OCI-compliant registry.</td></tr>
-<tr><td><code>docker-legacy</code></td><td>Uses the config blob digest from the OCI manifest. This is the image ID that Docker reports after <code>docker load</code> when using legacy storage (without containerd). Use this for Linux CI runners like GitHub Actions.</td></tr>
-<tr><td><code>docker-containerd</code></td><td>Converts the OCI manifest to Docker V2 Schema 2 format and computes the manifest digest. This is the image ID that Docker reports after <code>docker load</code> when using containerd storage. Use this for Docker Desktop or Docker Engine with containerd enabled.</td></tr>
-</tbody></table>
-</div>
-<p>See the <a href="https://github.com/opencontainers/image-spec/blob/main/manifest.md">OCI Image Manifest spec</a>
-and the <a href="https://docs.docker.com/registry/spec/manifest-v2-2/">Docker V2 Schema 2 spec</a>.</p>
 <p>Example:</p>
 <pre><code class="language-python">load("@rules_docker_compose//docker_compose:docker_compose_toolchain.bzl", "docker_compose_toolchain")
 
@@ -407,7 +398,6 @@ docker_compose_toolchain(
 <p><strong>ATTRIBUTES</strong></p>
 <div class="table-wrapper"><table><thead><tr><th style="text-align: left">Name</th><th style="text-align: left">Description</th><th style="text-align: left">Type</th><th style="text-align: left">Mandatory</th><th style="text-align: left">Default</th></tr></thead><tbody>
 <tr><td style="text-align: left"><a id="docker_compose_toolchain-name"></a>name</td><td style="text-align: left">A unique name for this target.</td><td style="text-align: left"><a href="https://bazel.build/concepts/labels#target-names">Name</a></td><td style="text-align: left">required</td><td style="text-align: left"></td></tr>
-<tr><td style="text-align: left"><a id="docker_compose_toolchain-digest_mode"></a>digest_mode</td><td style="text-align: left">Controls how image digests are computed for lock files. See the rule documentation for details on available modes. Defaults to the value of <code>--@rules_docker_compose//docker_compose/settings:toolchain_default_digest_mode</code>.</td><td style="text-align: left">String</td><td style="text-align: left">optional</td><td style="text-align: left"><code>""</code></td></tr>
 <tr><td style="text-align: left"><a id="docker_compose_toolchain-docker_compose"></a>docker_compose</td><td style="text-align: left">The docker-compose executable.</td><td style="text-align: left"><a href="https://bazel.build/concepts/labels">Label</a></td><td style="text-align: left">required</td><td style="text-align: left"></td></tr>
 <tr><td style="text-align: left"><a id="docker_compose_toolchain-version"></a>version</td><td style="text-align: left">The version of docker-compose.</td><td style="text-align: left">String</td><td style="text-align: left">required</td><td style="text-align: left"></td></tr>
 </tbody></table>
@@ -432,8 +422,15 @@ targets specified in the <code>images</code> attribute.</p>
 <p>At least one of <code>yamls</code> or <code>config</code> must be provided. When both are given, they are
 merged together using <code>docker-compose config</code> (the <code>config</code> JSON is applied on top of
 the YAML files).</p>
-<p>A lock file is generated containing a mapping of image tags to their content digests,
-which can be used to verify that the correct images are loaded at runtime.</p>
+<p>The merged YAML preserves the original image tags declared in your inputs — it is
+diff-reviewable and safe to share outside Bazel (e.g. check it into version control,
+hand off to a teammate's <code>docker compose -f</code> invocation, etc.).</p>
+<p>For each image with a registered loader, the merger ALSO computes a content digest
+(<code>sha256(index.json)</code> for rules_oci, <code>sha256(manifest_file)</code> for rules_img) and emits
+a second YAML where <code>services.*.image</code> references are rewritten to a content-derived
+unique tag of the form <code>&lt;repo&gt;:rdc-&lt;digest12&gt;</code>. That rewritten YAML is consumed only
+by <code>docker_compose_test</code> to isolate parallel test runs on a shared engine.
+<code>docker_compose_binary</code> (and the default output of this rule) use the original tags.</p>
 <p>Supported image loader types:</p>
 <div class="table-wrapper"><table><thead><tr><th>Loader</th><th>Source</th></tr></thead><tbody>
 <tr><td><a href="https://github.com/bazel-contrib/rules_oci/blob/main/docs/load.md#oci_load">oci_load</a></td><td>rules_oci</td></tr>

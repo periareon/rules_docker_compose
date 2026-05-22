@@ -176,8 +176,15 @@ targets specified in the <code>images</code> attribute.</p>
 <p>At least one of <code>yamls</code> or <code>config</code> must be provided. When both are given, they are
 merged together using <code>docker-compose config</code> (the <code>config</code> JSON is applied on top of
 the YAML files).</p>
-<p>A lock file is generated containing a mapping of image tags to their content digests,
-which can be used to verify that the correct images are loaded at runtime.</p>
+<p>The merged YAML preserves the original image tags declared in your inputs — it is
+diff-reviewable and safe to share outside Bazel (e.g. check it into version control,
+hand off to a teammate's <code>docker compose -f</code> invocation, etc.).</p>
+<p>For each image with a registered loader, the merger ALSO computes a content digest
+(<code>sha256(index.json)</code> for rules_oci, <code>sha256(manifest_file)</code> for rules_img) and emits
+a second YAML where <code>services.*.image</code> references are rewritten to a content-derived
+unique tag of the form <code>&lt;repo&gt;:rdc-&lt;digest12&gt;</code>. That rewritten YAML is consumed only
+by <code>docker_compose_test</code> to isolate parallel test runs on a shared engine.
+<code>docker_compose_binary</code> (and the default output of this rule) use the original tags.</p>
 <p>Supported image loader types:</p>
 <div class="table-wrapper"><table><thead><tr><th>Loader</th><th>Source</th></tr></thead><tbody>
 <tr><td><a href="https://github.com/bazel-contrib/rules_oci/blob/main/docs/load.md#oci_load">oci_load</a></td><td>rules_oci</td></tr>
