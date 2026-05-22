@@ -9,19 +9,6 @@ load(
 )
 load("//docker_compose/private:versions.bzl", "DOCKER_COMPOSE_VERSIONS")
 
-def toolchain_default_digest_mode():
-    """The default value of `docker_compose_toolchain.digest_mode`
-    """
-    string_flag(
-        name = "toolchain_default_digest_mode",
-        values = [
-            "oci",
-            "docker-legacy",
-            "docker-containerd",
-        ],
-        build_setting_default = "docker-containerd",
-    )
-
 def version(name = "version"):
     """The target version of docker-compose"""
     string_flag(

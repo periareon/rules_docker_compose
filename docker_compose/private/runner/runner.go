@@ -2,9 +2,12 @@ package main
 
 import (
 	"bufio"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"math/rand"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -32,19 +35,15 @@ type ContainerStatus struct {
 	Status string `json:"Status"`
 }
 
-// checkContainersRunning checks if docker-compose containers are running based on JSON output
-// Returns true if all containers are running, false otherwise
 func checkContainersRunning(outputStr string) bool {
 	outputStr = strings.TrimSpace(outputStr)
 	debugLog("docker-compose ps output:\n%s", outputStr)
 
-	// Check if output is empty or contains no containers
 	if outputStr == "" {
 		debugLog("No containers found")
 		return false
 	}
 
-	// Parse JSON output - each line is a JSON object
 	lines := strings.Split(outputStr, "\n")
 	allRunning := true
 	hasContainers := false
@@ -62,7 +61,6 @@ func checkContainersRunning(outputStr string) bool {
 		}
 
 		hasContainers = true
-		// Check if container is running (State should be "running")
 		if status.State != "running" {
 			debugLog("Container %s is not running (State: %s, Status: %s)", status.Name, status.State, status.Status)
 			allRunning = false
@@ -79,22 +77,17 @@ func checkContainersRunning(outputStr string) bool {
 	return allRunning
 }
 
-// waitForContainers waits for containers to be running with a timeout
 func waitForContainers(dockerCompose, yaml string, upProcess *os.Process, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	checkInterval := 500 * time.Millisecond
 
 	for time.Now().Before(deadline) {
-		// First, check if the docker-compose up process is still running
-		// If it has died, there's no point waiting - something went wrong
 		if upProcess != nil {
 			if err := upProcess.Signal(syscall.Signal(0)); err != nil {
-				// Process is not running - this indicates docker-compose up failed
 				return fmt.Errorf("docker-compose up process (PID: %d) has exited - containers failed to start", upProcess.Pid)
 			}
 		}
 
-		// Check if docker-compose ps returns empty output (indicates failure)
 		psCmd := exec.Command(dockerCompose, "-f", yaml, "ps", "--format", "json")
 		output, err := psCmd.Output()
 		if err != nil {
@@ -104,14 +97,12 @@ func waitForContainers(dockerCompose, yaml string, upProcess *os.Process, timeou
 		}
 
 		outputStr := string(output)
-		// If output is empty, containers haven't started yet
 		if strings.TrimSpace(outputStr) == "" {
 			debugLog("docker-compose ps returned empty output, waiting for containers to start")
 			time.Sleep(checkInterval)
 			continue
 		}
 
-		// Check if containers are running using the output we just got
 		if checkContainersRunning(outputStr) {
 			debugLog("All containers are running")
 			return nil
@@ -122,199 +113,239 @@ func waitForContainers(dockerCompose, yaml string, upProcess *os.Process, timeou
 	return fmt.Errorf("timeout waiting for containers to be running after %v", timeout)
 }
 
-// ImageInfo represents expected image information including digest
-type ImageInfo struct {
-	Repository string
-	Digest     string
+// TagRewrite mirrors the merger's sidecar JSON entry.
+type TagRewrite struct {
+	Original string `json:"original"`
+	Unique   string `json:"unique"`
 }
 
-// LockFile represents the lock file structure
-type LockFile struct {
-	Mode    string            `json:"mode"`
-	Digests map[string]string `json:"digests"`
+// LoaderEntry mirrors the merger's sidecar JSON entry.
+type LoaderEntry struct {
+	LoaderRlocation string       `json:"loader_rlocationpath"`
+	Tags            []TagRewrite `json:"tags"`
 }
 
-// loadLockFile loads the lock file and returns the parsed structure
-func loadLockFile(lockPath string) (*LockFile, error) {
-	data, err := os.ReadFile(lockPath)
+// RuntimeManifest mirrors the merger's sidecar JSON.
+type RuntimeManifest struct {
+	Loaders []LoaderEntry `json:"loaders"`
+}
+
+func loadRuntimeManifest(path string) (*RuntimeManifest, error) {
+	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read lock file %s: %v", lockPath, err)
+		return nil, fmt.Errorf("failed to read runtime manifest %s: %v", path, err)
 	}
-
-	var lockFile LockFile
-	if err := json.Unmarshal(data, &lockFile); err != nil {
-		return nil, fmt.Errorf("failed to parse lock file %s: %v", lockPath, err)
+	var rm RuntimeManifest
+	if err := json.Unmarshal(data, &rm); err != nil {
+		return nil, fmt.Errorf("failed to parse runtime manifest %s: %v", path, err)
 	}
-
-	return &lockFile, nil
+	return &rm, nil
 }
 
-// verifyImageDigests verifies that all running images exist in the lockfile
-func verifyImageDigests(dockerCompose, yaml string, expectedImages map[string]ImageInfo) error {
-	// Get actual running images from docker compose images --format json
-	imagesCmd := exec.Command(dockerCompose, "-f", yaml, "images", "--format", "json")
-	imagesCmd.Stderr = os.Stderr
-	imagesOutput, err := imagesCmd.Output()
-	if err != nil {
-		return fmt.Errorf("error running docker compose images --format json: %v", err)
+// engineBinary returns the container engine binary to invoke for
+// `network create/inspect/rm` and `tag` operations. Defaults to "docker"
+// on PATH; override with RULES_DOCKER_COMPOSE_ENGINE_BINARY (e.g. "podman").
+func engineBinary() string {
+	if v := os.Getenv("RULES_DOCKER_COMPOSE_ENGINE_BINARY"); v != "" {
+		return v
 	}
+	return "docker"
+}
 
-	// Parse JSON output
-	type DockerComposeImage struct {
-		ID         string `json:"ID"`
-		Repository string `json:"Repository"`
-		Tag        string `json:"Tag"`
-		Name       string `json:"Name"` // Fallback if Repository is empty
-		Digest     string `json:"Digest"`
+// lockNameFor returns the daemon-level lock network name for a given
+// original tag. The name is bounded to a safe Docker/Podman identifier.
+func lockNameFor(originalTag string) string {
+	h := sha256.Sum256([]byte(originalTag))
+	return "rdc-loadlock-" + hex.EncodeToString(h[:])[:16]
+}
+
+const (
+	lockTimeoutStaleMS = int64(120 * 1000)
+	lockAcquireBudget  = 60 * time.Second
+)
+
+// processAlive returns true if the given PID (on this host) is running.
+// On Linux this is `/proc/<pid>`; elsewhere we fall back to `kill -0`.
+func processAlive(pid int) bool {
+	if pid <= 0 {
+		return false
 	}
-
-	actualImages := make(map[string]string) // image ref -> digest
-	outputStr := strings.TrimSpace(string(imagesOutput))
-
-	// Try to parse as JSON array first
-	var imagesArray []DockerComposeImage
-	if err := json.Unmarshal([]byte(outputStr), &imagesArray); err == nil {
-		debugLog("Parsed docker compose images output as JSON array")
-		for _, img := range imagesArray {
-			imageRef := img.Repository
-			if imageRef == "" {
-				imageRef = img.Name
-			}
-			if img.Tag != "" && img.Tag != "<none>" {
-				imageRef = fmt.Sprintf("%s:%s", imageRef, img.Tag)
-			}
-
-			// Get digest from Digest field or ID field (as fallback)
-			digest := img.Digest
-			if digest == "" && strings.HasPrefix(img.ID, "sha256:") {
-				digest = img.ID
-			}
-
-			if digest != "" {
-				actualImages[imageRef] = digest
-				debugLog("Found running image: %s -> %s", imageRef, digest)
-			} else {
-				debugLog("Image %s has no digest in docker compose images output", imageRef)
-			}
-		}
+	if _, err := os.Stat(fmt.Sprintf("/proc/%d", pid)); err == nil {
+		return true
+	} else if !os.IsNotExist(err) {
+		// Not Linux or /proc not mounted; fall through.
 	} else {
-		// Try to parse as JSON lines (one object per line)
-		debugLog("Failed to parse docker compose images output as JSON array (%v), attempting JSON lines", err)
-		lines := strings.Split(outputStr, "\n")
-		for _, line := range lines {
-			line = strings.TrimSpace(line)
-			if line == "" {
+		return false
+	}
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	if err := proc.Signal(syscall.Signal(0)); err != nil {
+		return false
+	}
+	return true
+}
+
+// inspectLockLabels runs `<engine> network inspect <name>` and returns the
+// rdc-acquired-by PID and rdc-acquired-at unix-millis label values, if any.
+func inspectLockLabels(engine, name string) (pid int, acquiredAtMs int64, found bool) {
+	cmd := exec.Command(engine, "network", "inspect", name, "--format", "{{json .Labels}}")
+	out, err := cmd.Output()
+	if err != nil {
+		return 0, 0, false
+	}
+	var labels map[string]string
+	if err := json.Unmarshal(out, &labels); err != nil {
+		return 0, 0, false
+	}
+	if v, ok := labels["rdc-acquired-by"]; ok {
+		if n, err := strconv.Atoi(v); err == nil {
+			pid = n
+		}
+	}
+	if v, ok := labels["rdc-acquired-at"]; ok {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			acquiredAtMs = n
+		}
+	}
+	return pid, acquiredAtMs, true
+}
+
+// forceReleaseLock removes a stale lock network. Best-effort: errors are logged
+// only, since the next acquire attempt will retry anyway.
+func forceReleaseLock(engine, name string) {
+	cmd := exec.Command(engine, "network", "rm", name)
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		debugLog("force-release of lock %s failed (likely already gone): %v", name, err)
+	} else {
+		debugLog("Force-released stale lock: %s", name)
+	}
+}
+
+// acquireLock atomically creates the lock network for the given original tag.
+// Retries with stale-lock detection until success or the budget is exhausted.
+func acquireLock(engine, originalTag string) (string, error) {
+	name := lockNameFor(originalTag)
+	deadline := time.Now().Add(lockAcquireBudget)
+	myPid := os.Getpid()
+	for {
+		now := time.Now().UnixMilli()
+		cmd := exec.Command(engine, "network", "create",
+			"--label", fmt.Sprintf("rdc-acquired-at=%d", now),
+			"--label", fmt.Sprintf("rdc-acquired-by=%d", myPid),
+			"--label", fmt.Sprintf("rdc-original-tag=%s", originalTag),
+			name,
+		)
+		var stderr strings.Builder
+		cmd.Stderr = &stderr
+		if err := cmd.Run(); err == nil {
+			debugLog("Acquired lock %s for tag %s", name, originalTag)
+			return name, nil
+		} else {
+			debugLog("Lock %s contended (err=%v, stderr=%s)", name, err, stderr.String())
+		}
+
+		// Inspect existing lock for staleness.
+		if pid, atMs, ok := inspectLockLabels(engine, name); ok {
+			stale := false
+			if !processAlive(pid) {
+				debugLog("Lock %s held by dead PID %d, considering stale", name, pid)
+				stale = true
+			} else if atMs > 0 && (time.Now().UnixMilli()-atMs) > lockTimeoutStaleMS {
+				debugLog("Lock %s older than %dms, considering stale", name, lockTimeoutStaleMS)
+				stale = true
+			}
+			if stale {
+				forceReleaseLock(engine, name)
 				continue
 			}
-			var img DockerComposeImage
-			if err := json.Unmarshal([]byte(line), &img); err != nil {
-				return fmt.Errorf("error parsing docker compose images JSON: %v, line: %s", err, line)
-			}
-
-			imageRef := img.Repository
-			if imageRef == "" {
-				imageRef = img.Name
-			}
-			if img.Tag != "" && img.Tag != "<none>" {
-				imageRef = fmt.Sprintf("%s:%s", imageRef, img.Tag)
-			}
-
-			// Get digest from Digest field or ID field (as fallback)
-			digest := img.Digest
-			if digest == "" && strings.HasPrefix(img.ID, "sha256:") {
-				digest = img.ID
-			}
-
-			if digest != "" {
-				actualImages[imageRef] = digest
-				debugLog("Found running image: %s -> %s", imageRef, digest)
-			} else {
-				debugLog("Image %s has no digest in docker compose images output", imageRef)
-			}
 		}
+
+		if time.Now().After(deadline) {
+			return "", fmt.Errorf("timed out acquiring lock for tag %s (network %s)", originalTag, name)
+		}
+		jitter := time.Duration(rand.Int63n(int64(50 * time.Millisecond)))
+		time.Sleep(50*time.Millisecond + jitter)
+	}
+}
+
+func releaseLock(engine, name string) {
+	cmd := exec.Command(engine, "network", "rm", name)
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to release lock %s: %v\n", name, err)
+	} else {
+		debugLog("Released lock %s", name)
+	}
+}
+
+// retag invokes `<engine> tag <src> <dst>`. Fails loudly if src isn't loaded.
+func retag(engine, src, dst string) error {
+	cmd := exec.Command(engine, "tag", src, dst)
+	cmd.Stdout = os.Stderr
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("`%s tag %s %s` failed: %v", engine, src, dst, err)
+	}
+	debugLog("Retagged %s -> %s", src, dst)
+	return nil
+}
+
+// loadAndRetag runs the per-loader lock/load/retag/unlock cycle.
+func loadAndRetag(engine string, loaderPath string, entry LoaderEntry, runfilesEnv []string) error {
+	// Deduplicate original tags so we acquire each lock once.
+	seen := make(map[string]bool)
+	var originals []string
+	for _, t := range entry.Tags {
+		if seen[t.Original] {
+			continue
+		}
+		seen[t.Original] = true
+		originals = append(originals, t.Original)
 	}
 
-	// Verify each running image exists in the lockfile
-	if len(actualImages) == 0 {
-		return fmt.Errorf("no images found in docker compose images output")
+	var acquired []string
+	defer func() {
+		for _, name := range acquired {
+			releaseLock(engine, name)
+		}
+	}()
+
+	for _, original := range originals {
+		name, err := acquireLock(engine, original)
+		if err != nil {
+			return fmt.Errorf("failed to acquire lock for tag %s: %v", original, err)
+		}
+		acquired = append(acquired, name)
 	}
 
-	for imageRef, actualDigest := range actualImages {
-		// Find matching entry in lockfile
-		var expectedInfo ImageInfo
-		hasExpected := false
-		for lockKey, info := range expectedImages {
-			// Match if they're exactly equal, or if imageRef matches the lock key (with or without tag)
-			if imageRef == lockKey || strings.HasPrefix(imageRef, lockKey+":") || strings.HasPrefix(imageRef, lockKey+"@") {
-				expectedInfo = info
-				hasExpected = true
-				break
-			}
-			// Also check reverse - if lockKey starts with imageRef
-			if strings.HasPrefix(lockKey, imageRef+":") || strings.HasPrefix(lockKey, imageRef+"@") {
-				expectedInfo = info
-				hasExpected = true
-				break
-			}
-		}
-
-		if !hasExpected {
-			availableTags := make([]string, 0, len(expectedImages))
-			for tag := range expectedImages {
-				availableTags = append(availableTags, tag)
-			}
-			return fmt.Errorf("image '%s' (digest: %s) does not have an entry in the lock file. Available entries: %v", imageRef, actualDigest, availableTags)
-		}
-
-		// Compare digests (handle both full sha256:... and short format)
-		expectedDigest := expectedInfo.Digest
-		actualDigestFull := actualDigest
-		if !strings.HasPrefix(actualDigest, "sha256:") {
-			actualDigestFull = "sha256:" + actualDigest
-		}
-
-		// Normalize expected digest format
-		expectedDigestNormalized := expectedDigest
-		if !strings.HasPrefix(expectedDigestNormalized, "sha256:") {
-			expectedDigestNormalized = "sha256:" + expectedDigestNormalized
-		}
-
-		if expectedDigestNormalized != actualDigestFull {
-			// Try comparing just the hash part (after sha256:)
-			expectedHash := expectedDigestNormalized[7:]
-			actualHash := actualDigestFull[7:]
-
-			// Compare full hashes
-			if len(expectedHash) > len(actualHash) {
-				// Compare prefix if actual is shorter (short format)
-				if expectedHash[:len(actualHash)] != actualHash {
-					return fmt.Errorf("digest mismatch for image '%s': expected `%s` (from lockfile), got `%s` (from running container)", imageRef, expectedDigest, actualDigest)
-				}
-			} else if len(actualHash) > len(expectedHash) {
-				if actualHash[:len(expectedHash)] != expectedHash {
-					return fmt.Errorf("digest mismatch for image '%s': expected `%s` (from lockfile), got `%s` (from running container)", imageRef, expectedDigest, actualDigest)
-				}
-			} else {
-				if expectedHash != actualHash {
-					return fmt.Errorf("digest mismatch for image '%s': expected `%s` (from lockfile), got `%s` (from running container)", imageRef, expectedDigest, actualDigest)
-				}
-			}
-		}
-
-		debugLog("Verified digest for running image %s: %s", imageRef, expectedDigest)
+	debugLog("Running loader: %s", loaderPath)
+	loaderCmd := exec.Command(loaderPath)
+	loaderCmd.Stdout = os.Stderr
+	loaderCmd.Stderr = os.Stderr
+	loaderCmd.Env = append(os.Environ(), runfilesEnv...)
+	if err := loaderCmd.Run(); err != nil {
+		return fmt.Errorf("loader %s failed: %v", loaderPath, err)
 	}
+	debugLog("Loader %s completed", loaderPath)
 
+	for _, t := range entry.Tags {
+		if err := retag(engine, t.Original, t.Unique); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
 type Args struct {
-	DockerCompose string
-	Yaml          string
-	Loaders       []string
-	Lock          string
-	Test          string
-	TestArgs      []string
-	Delay         time.Duration
+	DockerCompose   string
+	Yaml            string
+	RuntimeManifest string
+	Test            string
+	TestArgs        []string
+	Delay           time.Duration
 }
 
 func parseArgs() (*Args, error) {
@@ -323,7 +354,6 @@ func parseArgs() (*Args, error) {
 		return nil, fmt.Errorf("RULES_DOCKER_COMPOSE_TEST_ARGS_FILE environment variable is not set")
 	}
 
-	// Resolve runfiles path
 	rf, err := runfiles.New()
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize runfiles: %v", err)
@@ -334,14 +364,12 @@ func parseArgs() (*Args, error) {
 		return nil, fmt.Errorf("failed to resolve runfiles path %s: %v", argsFile, err)
 	}
 
-	// Read args from file (one per line)
 	file, err := os.Open(resolvedArgsFile)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open args file %s: %v", resolvedArgsFile, err)
 	}
 	defer file.Close()
 
-	// Collect all lines into a slice of strings
 	var argLines []string
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
@@ -349,7 +377,6 @@ func parseArgs() (*Args, error) {
 		if line == "" {
 			continue
 		}
-		// Split line into flag and value, preserving quoted values
 		parts := strings.Fields(line)
 		if len(parts) >= 2 {
 			argLines = append(argLines, parts[0], strings.Join(parts[1:], " "))
@@ -362,46 +389,31 @@ func parseArgs() (*Args, error) {
 		return nil, fmt.Errorf("error reading args file: %v", err)
 	}
 
-	// Create a FlagSet and define flags
 	fs := flag.NewFlagSet("runner", flag.ContinueOnError)
 	args := &Args{}
 
 	fs.StringVar(&args.DockerCompose, "docker-compose", "", "Path to docker-compose binary")
 	fs.StringVar(&args.Yaml, "yaml", "", "Path to docker-compose yaml file")
+	fs.StringVar(&args.RuntimeManifest, "runtime-manifest", "", "Path to runtime manifest JSON")
 	fs.StringVar(&args.Test, "test", "", "Path to test binary")
 
-	// For delay, handle both integer (seconds) and duration string formats
 	var delayStr string
 	fs.StringVar(&delayStr, "delay", "", "Delay before running test (integer seconds or duration like '5s')")
 
-	// For loader, we need to collect multiple values
-	var loaders []string
-	fs.Func("loader", "Image loader tool to call before docker-compose up (can be specified multiple times)", func(value string) error {
-		loaders = append(loaders, value)
-		return nil
-	})
-
-	// For test-arg, we need to collect multiple values
 	var testArgs []string
 	fs.Func("test-arg", "Test argument (can be specified multiple times)", func(value string) error {
 		testArgs = append(testArgs, value)
 		return nil
 	})
 
-	var lock string
-	fs.StringVar(&lock, "lock", "", "Lock file (JSON mapping image tags to digests)")
-
-	// Parse from the slice of strings
 	if err := fs.Parse(argLines); err != nil {
 		return nil, fmt.Errorf("failed to parse args: %v", err)
 	}
 
-	// Parse delay (handle both integer seconds and duration strings)
 	if delayStr != "" {
 		if delay, err := time.ParseDuration(delayStr); err == nil {
 			args.Delay = delay
 		} else {
-			// Try parsing as integer seconds (backward compatibility)
 			if seconds, err := strconv.Atoi(delayStr); err == nil {
 				args.Delay = time.Duration(seconds) * time.Second
 			} else {
@@ -410,7 +422,6 @@ func parseArgs() (*Args, error) {
 		}
 	}
 
-	// Resolve runfiles paths
 	if args.DockerCompose != "" {
 		resolved, err := rf.Rlocation(args.DockerCompose)
 		if err != nil {
@@ -425,23 +436,12 @@ func parseArgs() (*Args, error) {
 		}
 		args.Yaml = resolved
 	}
-	// Resolve loader paths
-	for i, loader := range loaders {
-		resolved, err := rf.Rlocation(loader)
+	if args.RuntimeManifest != "" {
+		resolved, err := rf.Rlocation(args.RuntimeManifest)
 		if err != nil {
-			return nil, fmt.Errorf("failed to resolve loader path %s: %v", loader, err)
+			return nil, fmt.Errorf("failed to resolve runtime manifest path %s: %v", args.RuntimeManifest, err)
 		}
-		loaders[i] = resolved
-	}
-	args.Loaders = loaders
-
-	// Resolve lock file path if provided
-	if lock != "" {
-		resolved, err := rf.Rlocation(lock)
-		if err != nil {
-			return nil, fmt.Errorf("failed to resolve lock file path %s: %v", lock, err)
-		}
-		args.Lock = resolved
+		args.RuntimeManifest = resolved
 	}
 
 	if args.Test != "" {
@@ -454,7 +454,6 @@ func parseArgs() (*Args, error) {
 
 	args.TestArgs = testArgs
 
-	// Validate required flags
 	if args.DockerCompose == "" {
 		return nil, fmt.Errorf("missing required flag: -docker-compose")
 	}
@@ -472,10 +471,9 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Error parsing args: %v\n", err)
 		os.Exit(1)
 	}
-	debugLog("Parsed args: docker-compose=%s, yaml=%s, loaders=%v, lock=%s, test=%s, test-args=%v, delay=%v",
-		args.DockerCompose, args.Yaml, args.Loaders, args.Lock, args.Test, args.TestArgs, args.Delay)
+	debugLog("Parsed args: docker-compose=%s, yaml=%s, runtime-manifest=%s, test=%s, test-args=%v, delay=%v",
+		args.DockerCompose, args.Yaml, args.RuntimeManifest, args.Test, args.TestArgs, args.Delay)
 
-	// Get output directory for logs
 	outputDir := os.Getenv("TEST_UNDECLARED_OUTPUTS_DIR")
 	if outputDir == "" {
 		outputDir = os.TempDir()
@@ -491,10 +489,8 @@ func main() {
 	}
 	defer logFileHandle.Close()
 
-	// Track docker-compose up process
 	var upProcess *os.Process
 
-	// Cleanup function to stop docker-compose and run down
 	cleanupCalled := false
 	cleanupFunc := func() {
 		if cleanupCalled {
@@ -502,13 +498,11 @@ func main() {
 		}
 		cleanupCalled = true
 
-		// Send SIGINT to docker-compose up process if it's still running
 		if upProcess != nil {
 			debugLog("Sending SIGINT to docker-compose up process (PID: %d)", upProcess.Pid)
 			if err := upProcess.Signal(os.Interrupt); err != nil {
 				debugLog("Error sending SIGINT to docker-compose up: %v", err)
 			} else {
-				// Wait for the process to finish
 				_, err := upProcess.Wait()
 				if err != nil {
 					debugLog("docker-compose up process exited with error: %v", err)
@@ -518,7 +512,6 @@ func main() {
 			}
 		}
 
-		// Run docker-compose down for cleanup
 		debugLog("Running docker-compose down")
 		cmd := exec.Command(args.DockerCompose, "-f", args.Yaml, "down")
 		cmd.Stdout = os.Stderr
@@ -530,7 +523,6 @@ func main() {
 		}
 	}
 
-	// Handle signals to ensure cleanup
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 	go func() {
@@ -539,64 +531,44 @@ func main() {
 		os.Exit(1)
 	}()
 
-	// Ensure cleanup on exit
 	defer cleanupFunc()
 
-	// Run image loader tools if provided (in order)
-	if len(args.Loaders) > 0 {
+	// Run loaders under the daemon-level lock + retag flow.
+	var loaders []LoaderEntry
+	if args.RuntimeManifest != "" {
+		rm, err := loadRuntimeManifest(args.RuntimeManifest)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error loading runtime manifest: %v\n", err)
+			os.Exit(1)
+		}
+		loaders = rm.Loaders
+	}
+	if len(loaders) > 0 {
 		rf, err := runfiles.New()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Failed to load runfiles: %v\n", err)
 			os.Exit(1)
 		}
-		debugLog("Running %d image loader(s)", len(args.Loaders))
-		for i, loader := range args.Loaders {
-			debugLog("Running loader %d: %s", i+1, loader)
-			loaderCmd := exec.Command(loader)
-			loaderCmd.Stdout = os.Stderr
-			loaderCmd.Stderr = os.Stderr
-			loaderCmd.Env = append(os.Environ(), rf.Env()...)
-			if err := loaderCmd.Run(); err != nil {
-				fmt.Fprintf(os.Stderr, "Error running image loader %s: %v\n", loader, err)
+		engine := engineBinary()
+		debugLog("Running %d image loader(s) with engine=%s", len(loaders), engine)
+		for i, entry := range loaders {
+			loaderPath, err := rf.Rlocation(entry.LoaderRlocation)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error resolving loader %s: %v\n", entry.LoaderRlocation, err)
 				os.Exit(1)
 			}
-			debugLog("Loader %d completed successfully", i+1)
+			debugLog("Loader %d: %s", i+1, loaderPath)
+			if err := loadAndRetag(engine, loaderPath, entry, rf.Env()); err != nil {
+				fmt.Fprintf(os.Stderr, "Error running loader %s: %v\n", entry.LoaderRlocation, err)
+				os.Exit(1)
+			}
 		}
 	} else {
 		debugLog("No image loaders specified")
 	}
 
-	// Load lock file data if provided (will be used for validation after containers start)
-	var expectedImages map[string]ImageInfo
-	if args.Lock != "" {
-		debugLog("Loading lock file for digest verification: %s", args.Lock)
-		lockFile, err := loadLockFile(args.Lock)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error loading lock file: %v\n", err)
-			os.Exit(1)
-		}
-		debugLog("Loaded lock file with mode=%s, %d image(s)", lockFile.Mode, len(lockFile.Digests))
-		if len(lockFile.Digests) == 0 {
-			fmt.Fprintf(os.Stderr, "Warning: lock file %s has no digests. Make sure images in docker-compose yaml have digests.\n", args.Lock)
-		}
-		for tag, digest := range lockFile.Digests {
-			debugLog("  Lock entry: %s -> %s", tag, digest)
-		}
-
-		// Convert lock data to expectedImages format
-		expectedImages = make(map[string]ImageInfo)
-		for tag, digest := range lockFile.Digests {
-			expectedImages[tag] = ImageInfo{
-				Repository: tag, // tag includes repository
-				Digest:     digest,
-			}
-		}
-	}
-
-	// Spawn docker-compose up as a background process (without -d to capture logs)
 	debugLog("Spawning docker-compose up: %s -f %s up", args.DockerCompose, args.Yaml)
 	upCmd := exec.Command(args.DockerCompose, "-f", args.Yaml, "up", "--timeout", "60", "--no-build")
-	// Write both stdout and stderr to the log file only (container logs will be in docker_compose.log)
 	upCmd.Stdout = logFileHandle
 	upCmd.Stderr = logFileHandle
 	if err := upCmd.Start(); err != nil {
@@ -606,10 +578,8 @@ func main() {
 	upProcess = upCmd.Process
 	debugLog("docker-compose up process started (PID: %d)", upProcess.Pid)
 
-	// Wait for containers to be running (with timeout)
 	if err := waitForContainers(args.DockerCompose, args.Yaml, upProcess, 10*time.Second); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: containers failed to start: %v\n", err)
-		// Send SIGINT to stop docker-compose
 		if upProcess != nil {
 			upProcess.Signal(os.Interrupt)
 			upProcess.Wait()
@@ -618,29 +588,12 @@ func main() {
 	}
 	debugLog("All containers are running and ready")
 
-	// Verify image digests from lock file now that containers are running
-	if args.Lock != "" && len(expectedImages) > 0 {
-		debugLog("Verifying image digests from lock file")
-		if err := verifyImageDigests(args.DockerCompose, args.Yaml, expectedImages); err != nil {
-			fmt.Fprintf(os.Stderr, "Error verifying image digests: %v\n", err)
-			// Send SIGINT to stop docker-compose
-			if upProcess != nil {
-				upProcess.Signal(os.Interrupt)
-				upProcess.Wait()
-			}
-			os.Exit(1)
-		}
-		debugLog("All image digests verified successfully")
-	}
-
-	// Sleep for optional delay
 	if args.Delay > 0 {
 		debugLog("Sleeping for delay: %v", args.Delay)
 		time.Sleep(args.Delay)
 		debugLog("Delay completed")
 	}
 
-	// Run the test binary if provided
 	var testExitCode int
 	if args.Test != "" {
 		debugLog("Running test: %s with args: %v", args.Test, args.TestArgs)
@@ -669,14 +622,11 @@ func main() {
 		debugLog("No test specified")
 	}
 
-	// Send SIGINT to docker-compose up process to stop it gracefully
-	// This will cause it to stop containers and write all logs
 	if upProcess != nil {
 		debugLog("Sending SIGINT to docker-compose up process (PID: %d)", upProcess.Pid)
 		if err := upProcess.Signal(os.Interrupt); err != nil {
 			fmt.Fprintf(os.Stderr, "Error sending SIGINT to docker-compose up: %v\n", err)
 		} else {
-			// Wait for the process to finish
 			debugLog("Waiting for docker-compose up process to finish")
 			_, err := upProcess.Wait()
 			if err != nil {
@@ -685,10 +635,9 @@ func main() {
 				debugLog("docker-compose up process exited successfully")
 			}
 		}
-		upProcess = nil // Mark as cleaned up so defer doesn't try again
+		upProcess = nil
 	}
 
-	// Exit with test exit code
 	debugLog("Exiting with code: %d", testExitCode)
 	os.Exit(testExitCode)
 }

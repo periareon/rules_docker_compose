@@ -21,6 +21,3 @@ common --enable_platform_specific_config
 
 # Github MacOS runners do not support docker
 test:macos --test_tag_filters=-"requires-docker"
-
-# Linux runners uses legacy image storage with docker
-test:linux --@rules_docker_compose//docker_compose/settings:toolchain_default_digest_mode=docker-legacy

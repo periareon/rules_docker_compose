@@ -1,7 +1,5 @@
 """Docker-Compose toolchain"""
 
-load("@bazel_skylib//rules:common_settings.bzl", "BuildSettingInfo")
-
 TOOLCHAIN_TYPE = str(Label("//docker_compose:toolchain_type"))
 
 def _rlocationpath(file, workspace_name):
@@ -17,10 +15,6 @@ def _docker_compose_toolchain_impl(ctx):
             ctx.attr.docker_compose[DefaultInfo].default_runfiles.files,
         ])
 
-    digest_mode = ctx.attr.digest_mode
-    if not digest_mode:
-        digest_mode = ctx.attr._default_digest_mode[BuildSettingInfo].value
-
     make_variable_info = platform_common.TemplateVariableInfo({
         "DOCKER_COMPOSE": ctx.executable.docker_compose.path,
         "DOCKER_COMPOSE_RLOCATIONPATH": _rlocationpath(ctx.executable.docker_compose, ctx.workspace_name),
@@ -29,7 +23,6 @@ def _docker_compose_toolchain_impl(ctx):
     return [
         platform_common.ToolchainInfo(
             docker_compose = ctx.executable.docker_compose,
-            digest_mode = digest_mode,
             all_files = depset(transitive = all_files),
             make_variable_info = make_variable_info,
         ),
@@ -38,17 +31,6 @@ def _docker_compose_toolchain_impl(ctx):
 docker_compose_toolchain = rule(
     doc = """\
 A toolchain for providing Docker-Compose to Bazel rules.
-
-The `digest_mode` attribute controls how image digests are computed for lock files:
-
-| Mode | Description |
-|------|-------------|
-| `oci` | Uses the OCI manifest digest directly from the image's index.json. Use this when images are pushed to an OCI-compliant registry. |
-| `docker-legacy` | Uses the config blob digest from the OCI manifest. This is the image ID that Docker reports after `docker load` when using legacy storage (without containerd). Use this for Linux CI runners like GitHub Actions. |
-| `docker-containerd` | Converts the OCI manifest to Docker V2 Schema 2 format and computes the manifest digest. This is the image ID that Docker reports after `docker load` when using containerd storage. Use this for Docker Desktop or Docker Engine with containerd enabled. |
-
-See the [OCI Image Manifest spec](https://github.com/opencontainers/image-spec/blob/main/manifest.md)
-and the [Docker V2 Schema 2 spec](https://docs.docker.com/registry/spec/manifest-v2-2/).
 
 Example:
 
@@ -111,14 +93,6 @@ docker_compose_toolchain(
 """,
     implementation = _docker_compose_toolchain_impl,
     attrs = {
-        "digest_mode": attr.string(
-            doc = "Controls how image digests are computed for lock files. See the rule documentation for details on available modes. Defaults to the value of `--@rules_docker_compose//docker_compose/settings:toolchain_default_digest_mode`.",
-            values = [
-                "oci",
-                "docker-legacy",
-                "docker-containerd",
-            ],
-        ),
         "docker_compose": attr.label(
             doc = "The docker-compose executable.",
             cfg = "exec",
@@ -129,9 +103,6 @@ docker_compose_toolchain(
         "version": attr.string(
             doc = "The version of docker-compose.",
             mandatory = True,
-        ),
-        "_default_digest_mode": attr.label(
-            default = Label("//docker_compose/settings:toolchain_default_digest_mode"),
         ),
     },
 )

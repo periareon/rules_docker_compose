@@ -5,7 +5,6 @@ go_binary(
     srcs = ["merger.go"],
     visibility = ["//visibility:public"],
     deps = [
-        "//docker_compose/private/digest",
         "@in_gopkg_yaml_v3//:yaml_v3",
     ],
 )
