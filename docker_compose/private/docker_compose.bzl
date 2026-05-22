@@ -57,9 +57,10 @@ with docker-compose configurations.
     fields = {
         "data": "depset[File]: Additional data files referenced by the configuration (env_file, configs, secrets, bind-mount sources).",
         "images": "depset[File]: The image loader executables for each image referenced in the yaml.",
-        "yaml": "File: The merged docker-compose YAML file.",
+        "runtime_manifest": "File: A JSON manifest mapping each loader to its (original_tag, unique_tag) rewrites, consumed by the runner and launcher.",
+        "yaml": "File: The merged docker-compose YAML file with original image tags preserved. This is the user-facing artifact, suitable for sharing outside Bazel.",
         "yaml_deps": "depset[File]: All files which contributed to the merged yaml (input yamls and image manifests).",
-        "yaml_lock": "File: A JSON lockfile mapping image tags to their content digests for verification.",
+        "yaml_rewritten": "File: The merged docker-compose YAML with each loader-backed image rewritten to a content-derived unique tag. Used internally by `docker_compose_test` to isolate parallel test runs on a shared engine.",
     },
 )
 
@@ -115,11 +116,17 @@ def _create_image_manifests(*, ctx, images, output_fmt):
         if tag_files:
             tag_file_paths = [tag_file.path for tag_file in tag_files]
 
+        loader_rlocationpath = _rlocationpath(
+            image[ImageLoadRepositoryInfo].loader,
+            ctx.workspace_name,
+        )
+
         ctx.actions.write(
             output = single_image_manifest,
             content = json.encode_indent(
                 struct(
                     label = str(image.label),
+                    loader_rlocationpath = loader_rlocationpath,
                     tag_file_paths = tag_file_paths,
                     oci_layout_dir = oci_layout_dir,
                     manifest_file = manifest_file,
@@ -137,7 +144,8 @@ def _docker_compose_yaml_action(
         ctx,
         yamls,
         output,
-        out_lock,
+        out_rewritten,
+        out_runtime_manifest,
         toolchain,
         image_manifests = [],
         image_inputs = [],
@@ -149,9 +157,9 @@ def _docker_compose_yaml_action(
     args = ctx.actions.args()
     args.add("-docker-compose", toolchain.docker_compose)
     args.add("-output", output)
+    args.add("-output-rewritten", out_rewritten)
     args.add("-project-name", project_name)
-    args.add("-output-lock", out_lock)
-    args.add("-digest-mode", toolchain.digest_mode)
+    args.add("-output-runtime", out_runtime_manifest)
     for file in yamls:
         args.add("-file", file)
 
@@ -186,11 +194,11 @@ def _docker_compose_yaml_action(
         executable = ctx.executable._merger,
         arguments = [args],
         inputs = depset(yamls + image_inputs + image_manifests + data_inputs + extra_inputs),
-        outputs = [output, out_lock],
+        outputs = [output, out_rewritten, out_runtime_manifest],
         tools = toolchain.all_files,
     )
 
-    return output, out_lock
+    return output, out_rewritten, out_runtime_manifest
 
 def _collect_images(*, yamls, images):
     transitive_images = []
@@ -235,13 +243,21 @@ def _docker_compose_yaml_impl(ctx):
     if not output:
         output = ctx.actions.declare_file("{}/docker-compose.yaml".format(ctx.label.name))
 
-    lock = ctx.actions.declare_file("{}.lock.json".format(output.basename), sibling = output)
+    rewritten = ctx.actions.declare_file(
+        "{}.rewritten.yaml".format(output.basename),
+        sibling = output,
+    )
+    runtime_manifest = ctx.actions.declare_file(
+        "{}.runtime.json".format(output.basename),
+        sibling = output,
+    )
 
     _docker_compose_yaml_action(
         ctx = ctx,
         yamls = yamls.to_list() + extra_yaml_files,
         output = output,
-        out_lock = lock,
+        out_rewritten = rewritten,
+        out_runtime_manifest = runtime_manifest,
         toolchain = toolchain,
         image_manifests = image_manifests,
         image_inputs = image_inputs,
@@ -256,7 +272,8 @@ def _docker_compose_yaml_impl(ctx):
         ),
         DockerComposeYamlInfo(
             yaml = output,
-            yaml_lock = lock,
+            yaml_rewritten = rewritten,
+            runtime_manifest = runtime_manifest,
             yaml_deps = yamls,
             images = ctx.attr.images,
             data = depset(data_files),
@@ -276,8 +293,16 @@ At least one of `yamls` or `config` must be provided. When both are given, they 
 merged together using `docker-compose config` (the `config` JSON is applied on top of
 the YAML files).
 
-A lock file is generated containing a mapping of image tags to their content digests,
-which can be used to verify that the correct images are loaded at runtime.
+The merged YAML preserves the original image tags declared in your inputs — it is
+diff-reviewable and safe to share outside Bazel (e.g. check it into version control,
+hand off to a teammate's `docker compose -f` invocation, etc.).
+
+For each image with a registered loader, the merger ALSO computes a content digest
+(`sha256(index.json)` for rules_oci, `sha256(manifest_file)` for rules_img) and emits
+a second YAML where `services.*.image` references are rewritten to a content-derived
+unique tag of the form `<repo>:rdc-<digest12>`. That rewritten YAML is consumed only
+by `docker_compose_test` to isolate parallel test runs on a shared engine.
+`docker_compose_binary` (and the default output of this rule) use the original tags.
 
 Supported image loader types:
 
@@ -364,7 +389,7 @@ def _docker_compose_binary_impl(ctx):
 
     info = ctx.attr.yaml[DockerComposeYamlInfo]
     yaml = info.yaml
-    lock = info.yaml_lock
+    runtime_manifest = info.runtime_manifest
 
     images = _collect_images(yamls = [ctx.attr.yaml], images = ctx.attr.images)
 
@@ -381,7 +406,10 @@ def _docker_compose_binary_impl(ctx):
     )
 
     args_file = ctx.actions.declare_file("{0}_data/{0}.args.txt".format(ctx.label.name))
-    runfiles = ctx.runfiles(files = [args_file, yaml, lock], transitive_files = toolchain.all_files)
+    runfiles = ctx.runfiles(
+        files = [args_file, yaml, runtime_manifest],
+        transitive_files = toolchain.all_files,
+    )
 
     if info.data:
         runfiles = runfiles.merge(ctx.runfiles(transitive_files = info.data))
@@ -390,11 +418,14 @@ def _docker_compose_binary_impl(ctx):
     args.set_param_file_format("multiline")
     args.add("-docker-compose", _rlocationpath(toolchain.docker_compose, ctx.workspace_name))
     args.add("-yaml", _rlocationpath(yaml, ctx.workspace_name))
+    args.add("-runtime-manifest", _rlocationpath(runtime_manifest, ctx.workspace_name))
 
+    # Loader runfiles must be staged so the launcher can resolve and exec each
+    # loader path emitted in the runtime manifest. The launcher reads the loader
+    # list from the runtime manifest itself; no per-loader args are needed.
     for image in images:
         image_info = image[ImageLoadRepositoryInfo]
         runfiles = runfiles.merge(image_info.loader_runfiles)
-        args.add("-loader", _rlocationpath(image_info.loader, ctx.workspace_name))
 
     ctx.actions.write(
         output = args_file,
@@ -581,8 +612,8 @@ def _docker_compose_test_impl(ctx):
     data_from_yaml = None
     if len(ctx.attr.yamls) == 1 and DockerComposeYamlInfo in ctx.attr.yamls[0]:
         info = ctx.attr.yamls[0][DockerComposeYamlInfo]
-        yaml = info.yaml
-        lock = info.yaml_lock
+        yaml = info.yaml_rewritten
+        runtime_manifest = info.runtime_manifest
         data_from_yaml = info.data
     else:
         yamls = _collect_yamls(yamls = ctx.attr.yamls)
@@ -593,11 +624,12 @@ def _docker_compose_test_impl(ctx):
             output_fmt = "{name}_images/{image}.json",
         )
 
-        yaml, lock = _docker_compose_yaml_action(
+        _, yaml, runtime_manifest = _docker_compose_yaml_action(
             ctx = ctx,
             yamls = yamls.to_list(),
             output = ctx.actions.declare_file("{}-docker-compose.yaml".format(ctx.label.name)),
-            out_lock = ctx.actions.declare_file("{}-docker-compose.yaml.lock.json".format(ctx.label.name)),
+            out_rewritten = ctx.actions.declare_file("{}-docker-compose.rewritten.yaml".format(ctx.label.name)),
+            out_runtime_manifest = ctx.actions.declare_file("{}-docker-compose.yaml.runtime.json".format(ctx.label.name)),
             toolchain = toolchain,
             image_manifests = image_manifests,
             image_inputs = image_inputs,
@@ -622,7 +654,10 @@ def _docker_compose_test_impl(ctx):
             known_variables.update(variables)
 
     args_file = ctx.actions.declare_file("{0}_data/{0}.args.txt".format(ctx.label.name))
-    runfiles = ctx.runfiles(files = [args_file, yaml, lock], transitive_files = toolchain.all_files)
+    runfiles = ctx.runfiles(
+        files = [args_file, yaml, runtime_manifest],
+        transitive_files = toolchain.all_files,
+    )
 
     if data_from_yaml:
         runfiles = runfiles.merge(ctx.runfiles(transitive_files = data_from_yaml))
@@ -631,7 +666,7 @@ def _docker_compose_test_impl(ctx):
     args.set_param_file_format("multiline")
     args.add("-docker-compose", _rlocationpath(toolchain.docker_compose, ctx.workspace_name))
     args.add("-yaml", _rlocationpath(yaml, ctx.workspace_name))
-    args.add("-lock", _rlocationpath(lock, ctx.workspace_name))
+    args.add("-runtime-manifest", _rlocationpath(runtime_manifest, ctx.workspace_name))
 
     if ctx.attr.delay:
         args.add("-delay", ctx.attr.delay)
@@ -648,10 +683,12 @@ def _docker_compose_test_impl(ctx):
             for arg in ctx.attr.test[_ArgsInfo].args:
                 args.add("-test-arg", arg)
 
+    # Loader runfiles must be staged so the runner can resolve and exec each
+    # loader path emitted in the runtime manifest. The runner reads the loader
+    # list from the runtime manifest itself; no per-loader args are needed.
     for image in images:
         image_info = image[ImageLoadRepositoryInfo]
         runfiles = runfiles.merge(image_info.loader_runfiles)
-        args.add("-loader", _rlocationpath(image_info.loader, ctx.workspace_name))
 
     ctx.actions.write(
         output = args_file,
@@ -687,12 +724,12 @@ Runs a test with docker-compose services.
 This rule starts docker-compose services, waits for them to be ready, runs a test binary,
 and then tears down the services. The test lifecycle is:
 
-1. Loading container images into Docker using the specified loader targets
-2. Starting services with `docker-compose up`
+1. Loading container images into Docker (under a per-original-tag daemon-level lock)
+   and retagging each loaded image to a content-derived unique tag
+2. Starting services with `docker-compose up` against the unique-tag-rewritten YAML
 3. Waiting for containers to be running (with health checks)
-4. Verifying image digests match the expected values from the lock file
-5. Running the test binary with optional arguments
-6. Cleaning up with `docker-compose down`
+4. Running the test binary with optional arguments
+5. Cleaning up with `docker-compose down`
 
 The test requires network access and Docker to be available on the host.
 
