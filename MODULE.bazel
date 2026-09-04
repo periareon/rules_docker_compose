@@ -30,7 +30,7 @@ register_toolchains(
 bazel_dep(name = "rules_oci", version = "2.3.0", dev_dependency = True)
 bazel_dep(name = "rules_img", version = "0.3.9", dev_dependency = True)
 bazel_dep(name = "stardoc", version = "0.8.0", dev_dependency = True)
-bazel_dep(name = "rules_rust_mdbook", version = "0.70.0", dev_dependency = True)
+bazel_dep(name = "rules_rust_mdbook", version = "0.74.0", dev_dependency = True)
 bazel_dep(name = "rules_shell", version = "0.6.1", dev_dependency = True)
 
 # This override can be dropped when https://github.com/bazel-contrib/rules_oci/pull/891 is released.
