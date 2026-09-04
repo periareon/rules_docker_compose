@@ -14,7 +14,7 @@ def version(name = "version"):
     string_flag(
         name = name,
         values = DOCKER_COMPOSE_VERSIONS.keys(),
-        build_setting_default = "5.1.0",
+        build_setting_default = "5.5.1",
     )
 
     for ver in DOCKER_COMPOSE_VERSIONS.keys():
