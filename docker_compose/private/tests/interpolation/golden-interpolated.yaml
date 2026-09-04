@@ -1,0 +1,17 @@
+name: 00__docker_compose_private_tests_interpolation__interpolated
+services:
+  app:
+    command:
+      - echo
+      - ""
+    environment:
+      DECLARED: declared-at-build-time
+      DEFAULTED: fallback
+      HOST_ONLY: /home/
+      LITERAL: keep $$this literal
+    image: nginx:1.2.3
+    networks:
+      default: null
+networks:
+  default:
+    name: 00__docker_compose_private_tests_interpolation__interpolated_default

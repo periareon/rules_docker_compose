@@ -1,0 +1,18 @@
+# Exercises every kind of variable reference so the goldens next to this file
+# document exactly which ones the rules resolve at build time and which ones
+# survive into the merged yaml for docker-compose to resolve at runtime.
+#
+# RDC_HOST_ONLY_VAR stands in for values like ${USER} that only exist on the
+# developer's machine. A literal ${USER} is avoided here because whether Bazel
+# passes it into an action's environment is not guaranteed to be stable.
+services:
+  app:
+    # Image references are always resolved at build time, even under
+    # interpolate = False, because each one has to be matched to a loader.
+    image: "nginx:${IMAGE_TAG}"
+    command: ["echo", "${RDC_HOST_ONLY_VAR}"]
+    environment:
+      DECLARED: "${DECLARED_VAR}"
+      DEFAULTED: "${RDC_UNSET_VAR:-fallback}"
+      HOST_ONLY: "/home/${RDC_HOST_ONLY_VAR}"
+      LITERAL: "keep $$this literal"

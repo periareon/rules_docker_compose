@@ -1,0 +1,39 @@
+load("@bazel_skylib//rules:diff_test.bzl", "diff_test")
+load("//docker_compose:docker_compose_yaml.bzl", "docker_compose_yaml")
+
+# Both targets share the same declared environment so the goldens differ only
+# by the `interpolate` setting.
+INTERPOLATION_ENV = {
+    "DECLARED_VAR": "declared-at-build-time",
+    "IMAGE_TAG": "1.2.3",
+}
+
+# interpolate = True (the default): docker-compose resolves everything while
+# merging. Undeclared variables resolve to the empty string because Bazel runs
+# actions with a sanitized environment -- see golden-interpolated.yaml.
+docker_compose_yaml(
+    name = "interpolated",
+    interpolation_env = INTERPOLATION_ENV,
+    yamls = ["docker-compose.yaml"],
+)
+
+diff_test(
+    name = "interpolated_diff_test",
+    file1 = "golden-interpolated.yaml",
+    file2 = ":interpolated",
+)
+
+# interpolate = False: every reference is preserved verbatim for runtime,
+# except services.*.image -- see golden-deferred.yaml.
+docker_compose_yaml(
+    name = "deferred",
+    interpolate = False,
+    interpolation_env = INTERPOLATION_ENV,
+    yamls = ["docker-compose.yaml"],
+)
+
+diff_test(
+    name = "deferred_diff_test",
+    file1 = "golden-deferred.yaml",
+    file2 = ":deferred",
+)

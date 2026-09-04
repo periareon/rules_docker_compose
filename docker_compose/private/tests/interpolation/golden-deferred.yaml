@@ -1,0 +1,17 @@
+name: 00__docker_compose_private_tests_interpolation__deferred
+networks:
+  default:
+    name: 00__docker_compose_private_tests_interpolation__deferred_default
+services:
+  app:
+    command:
+      - echo
+      - ${RDC_HOST_ONLY_VAR}
+    environment:
+      DECLARED: ${DECLARED_VAR}
+      DEFAULTED: ${RDC_UNSET_VAR:-fallback}
+      HOST_ONLY: /home/${RDC_HOST_ONLY_VAR}
+      LITERAL: keep $$this literal
+    image: nginx:1.2.3
+    networks:
+      default: null

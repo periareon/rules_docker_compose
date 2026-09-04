@@ -150,7 +150,9 @@ def _docker_compose_yaml_action(
         image_manifests = [],
         image_inputs = [],
         data_inputs = [],
-        config_file = None):
+        config_file = None,
+        interpolate = True,
+        interpolation_env = {}):
     # Sanitize label for project name: replace @ with AT, + with -, / with _, : with __
     project_name = str(ctx.label).replace("@", "0").replace("+", "-").replace("/", "_").replace(":", "__")
 
@@ -162,6 +164,13 @@ def _docker_compose_yaml_action(
     args.add("-output-runtime", out_runtime_manifest)
     for file in yamls:
         args.add("-file", file)
+
+    if not interpolate:
+        args.add("-no-interpolate")
+
+    # Sorted so the action key doesn't depend on declaration order.
+    for key in sorted(interpolation_env):
+        args.add("-env", "{}={}".format(key, interpolation_env[key]))
 
     for manifest in image_manifests:
         # Add the single_image_manifest to args
@@ -263,6 +272,8 @@ def _docker_compose_yaml_impl(ctx):
         image_inputs = image_inputs,
         data_inputs = data_files,
         config_file = config_file,
+        interpolate = ctx.attr.interpolate,
+        interpolation_env = ctx.attr.interpolation_env,
     )
 
     return [
@@ -367,6 +378,42 @@ docker_compose_yaml(
         "images": attr.label_list(
             doc = "Image loader targets that provide the container images referenced in the configuration. Each image referenced in the docker-compose config must have a corresponding loader target. See the rule documentation for supported loader types.",
             aspects = [image_load_repository_aspect],
+        ),
+        "interpolate": attr.bool(
+            doc = """\
+Whether to resolve `${VAR}` references when merging.
+
+When `True` (the default), `docker-compose config` interpolates every variable
+at build time. Bazel actions run with a sanitized environment, so a variable
+that isn't declared in `interpolation_env` resolves to an empty string.
+
+Set to `False` to keep `${VAR}` references verbatim in the merged YAML so
+docker-compose resolves them at runtime instead — the right choice for
+per-developer or per-machine values like `${USER}`. `services.*.image` is
+always resolved at build time regardless, because each image reference must be
+matched to a loader target; declare any variables it uses in
+`interpolation_env`.
+""",
+            default = True,
+        ),
+        "interpolation_env": attr.string_dict(
+            doc = """\
+Environment variables used to interpolate the compose files at build time.
+
+These are visible only to the merge action, not to the containers. Because the
+values are declared in the BUILD file rather than read from the invoking shell,
+they keep the merged YAML hermetic and correctly cached.
+
+When `interpolate = False` this applies to `services.*.image` only, since that
+is the only field still resolved at build time; every other reference is left
+for docker-compose to resolve at runtime.
+
+To set variables the containers see at runtime, use the compose file's own
+`environment`/`env_file` keys. To let a variable come from the host at runtime,
+set `interpolate = False` and (for `bazel test`) list it in the
+`env_inherit` attribute of `docker_compose_test`.
+""",
+            default = {},
         ),
         "out": attr.output(
             doc = "Optional output filename for the merged docker-compose YAML. Defaults to `{name}/docker-compose.yaml`.",
@@ -611,6 +658,14 @@ def _docker_compose_test_impl(ctx):
 
     data_from_yaml = None
     if len(ctx.attr.yamls) == 1 and DockerComposeYamlInfo in ctx.attr.yamls[0]:
+        # The merge already happened in the `docker_compose_yaml` target, so
+        # interpolation is configured there. Fail rather than silently drop it.
+        if not ctx.attr.interpolate or ctx.attr.interpolation_env:
+            fail((
+                "`interpolate` and `interpolation_env` have no effect when `yamls` is a " +
+                "single `docker_compose_yaml` target. Set them on {} instead."
+            ).format(ctx.attr.yamls[0].label))
+
         info = ctx.attr.yamls[0][DockerComposeYamlInfo]
         yaml = info.yaml_rewritten
         runtime_manifest = info.runtime_manifest
@@ -633,6 +688,8 @@ def _docker_compose_test_impl(ctx):
             toolchain = toolchain,
             image_manifests = image_manifests,
             image_inputs = image_inputs,
+            interpolate = ctx.attr.interpolate,
+            interpolation_env = ctx.attr.interpolation_env,
         )
 
     is_windows = ctx.executable._test_runner.basename.endswith(".exe")
@@ -780,6 +837,31 @@ docker_compose_test(
         "images": attr.label_list(
             doc = "Image loader targets that provide the container images for the docker-compose services. Each image will be loaded into Docker before `docker-compose up` is called. See the rule documentation for supported loader types.",
             aspects = [image_load_repository_aspect],
+        ),
+        "interpolate": attr.bool(
+            doc = """\
+Whether to resolve `${VAR}` references when merging raw `yamls` at build time.
+See the `docker_compose_yaml` rule for details.
+
+Setting this is an error when `yamls` is a single `docker_compose_yaml` target,
+which carries its own `interpolate` setting.
+
+Note that `bazel test` runs with a sanitized environment, so a deferred variable
+also needs to be listed in `env_inherit` (or set in `env`) to reach
+docker-compose at runtime.
+""",
+            default = True,
+        ),
+        "interpolation_env": attr.string_dict(
+            doc = """\
+Environment variables used to interpolate raw `yamls` at build time. See the
+`docker_compose_yaml` rule for details.
+
+This is distinct from `env`, which sets the environment of the test process
+itself. Setting this is an error when `yamls` is a single `docker_compose_yaml`
+target; declare it on that target instead.
+""",
+            default = {},
         ),
         "test": attr.label(
             doc = "The test binary to execute after containers are running. The binary will receive arguments from `test_args`.",
