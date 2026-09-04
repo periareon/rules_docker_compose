@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -91,8 +92,10 @@ type Args struct {
 	ProjectName         string
 	DataManifest        string
 	OutputRlocationpath string
+	NoInterpolate       bool
 	Files               []string
 	ImageManifests      []string
+	Env                 []string
 }
 
 // ImageManifest is the per-loader manifest emitted by the bzl rule and
@@ -134,10 +137,13 @@ func parseArgs() (*Args, error) {
 	flag.StringVar(&args.ProjectName, "project-name", "", "Project name for docker-compose")
 	flag.StringVar(&args.DataManifest, "data-manifest", "", "Path to JSON manifest mapping data file execpaths to rlocationpaths")
 	flag.StringVar(&args.OutputRlocationpath, "output-rlocationpath", "", "Rlocationpath of the output YAML file (for computing relative paths)")
+	flag.BoolVar(&args.NoInterpolate, "no-interpolate", false, "Leave ${VAR} references in the merged yaml unresolved so docker-compose interpolates them at runtime")
 	var files flagArray
 	flag.Var(&files, "file", "Docker compose yaml file to merge (can be specified multiple times)")
 	var imageManifests flagArray
 	flag.Var(&imageManifests, "image_manifest", "Image manifest file (can be specified multiple times)")
+	var env flagArray
+	flag.Var(&env, "env", "KEY=VALUE pair added to the docker-compose environment for interpolation (can be specified multiple times)")
 	flag.Parse()
 
 	if args.DockerCompose == "" {
@@ -150,8 +156,15 @@ func parseArgs() (*Args, error) {
 		return nil, fmt.Errorf("at least one -file flag is required")
 	}
 
+	for _, pair := range env {
+		if !strings.Contains(pair, "=") {
+			return nil, fmt.Errorf("invalid -env value %q: expected KEY=VALUE", pair)
+		}
+	}
+
 	args.Files = files
 	args.ImageManifests = imageManifests
+	args.Env = env
 	return args, nil
 }
 
@@ -251,20 +264,16 @@ func normalizedTagForms(tag string) []string {
 	return forms
 }
 
-// rewriteComposeYAML walks `services.*.image` in the merged compose YAML and
-// replaces any reference matching an original loader tag with its unique tag.
-// External references (no loader registered) are left untouched.
-func rewriteComposeYAML(yamlContent []byte, mapping map[string]string) ([]byte, error) {
-	var root yaml.Node
-	if err := yaml.Unmarshal(yamlContent, &root); err != nil {
-		return nil, fmt.Errorf("failed to parse merged YAML for rewriting: %v", err)
-	}
+// forEachServiceImage walks `services.<name>.image` in a parsed compose
+// document, invoking fn with the service name and the mutable image scalar
+// node. Documents that don't have the expected shape simply yield no calls.
+func forEachServiceImage(root *yaml.Node, fn func(service string, image *yaml.Node)) {
 	if root.Kind != yaml.DocumentNode || len(root.Content) == 0 {
-		return yamlContent, nil
+		return
 	}
 	top := root.Content[0]
 	if top.Kind != yaml.MappingNode {
-		return yamlContent, nil
+		return
 	}
 	for i := 0; i+1 < len(top.Content); i += 2 {
 		key := top.Content[i]
@@ -273,6 +282,7 @@ func rewriteComposeYAML(yamlContent []byte, mapping map[string]string) ([]byte, 
 			continue
 		}
 		for j := 0; j+1 < len(val.Content); j += 2 {
+			name := val.Content[j].Value
 			service := val.Content[j+1]
 			if service.Kind != yaml.MappingNode {
 				continue
@@ -283,29 +293,225 @@ func rewriteComposeYAML(yamlContent []byte, mapping map[string]string) ([]byte, 
 				if skey.Value != "image" || sval.Kind != yaml.ScalarNode {
 					continue
 				}
-				original := sval.Value
-				if unique, ok := mapping[original]; ok {
-					debugLog("Rewriting service image: %s -> %s", original, unique)
-					sval.Value = unique
-				} else if stripped := strings.TrimPrefix(original, "docker.io/"); stripped != original {
-					if unique, ok := mapping[stripped]; ok {
-						debugLog("Rewriting service image (stripped docker.io): %s -> %s", original, unique)
-						sval.Value = unique
-					}
-				}
+				fn(name, sval)
 			}
 		}
 	}
+}
+
+func encodeYAML(root *yaml.Node) ([]byte, error) {
 	var buf strings.Builder
 	enc := yaml.NewEncoder(&buf)
 	enc.SetIndent(2)
-	if err := enc.Encode(&root); err != nil {
-		return nil, fmt.Errorf("failed to re-marshal rewritten YAML: %v", err)
+	if err := enc.Encode(root); err != nil {
+		return nil, fmt.Errorf("failed to re-marshal YAML: %v", err)
 	}
 	if err := enc.Close(); err != nil {
 		return nil, fmt.Errorf("failed to close YAML encoder: %v", err)
 	}
 	return []byte(buf.String()), nil
+}
+
+// hasVariableRef reports whether s contains an un-escaped compose variable
+// reference ($VAR or ${VAR}). "$$" is compose's escape for a literal "$" and
+// does not count.
+func hasVariableRef(s string) bool {
+	return strings.Contains(strings.ReplaceAll(s, "$$", ""), "$")
+}
+
+// composeVarRef matches one compose interpolation token. The alternatives are
+// ordered so "$$" (the escape for a literal "$") is consumed before it can be
+// mistaken for a reference; the remaining two capture the braced and bare
+// forms respectively.
+var composeVarRef = regexp.MustCompile(`\$\$|\$\{([^}]*)\}|\$([A-Za-z0-9_]+)`)
+
+// composeVarRefs returns the variable names in s that have to come from the
+// environment. References carrying a default or alternate (`${VAR:-x}`,
+// `${VAR-x}`, `${VAR:+x}`, `${VAR+x}`) are excluded because compose resolves
+// them on its own, as are `${VAR:?err}` forms, which compose reports itself.
+//
+// This only identifies names; docker-compose still performs the substitution.
+// It exists because an unset variable interpolates to the empty string rather
+// than failing, which would otherwise turn "myapp:${TAG}" into the mystifying
+// image reference "myapp:".
+func composeVarRefs(s string) []string {
+	var names []string
+	for _, match := range composeVarRef.FindAllStringSubmatch(s, -1) {
+		// Exactly one of the two groups is populated; "$$" leaves both empty.
+		name := match[1] + match[2]
+		if name == "" || strings.ContainsAny(name, ":-+?") {
+			continue
+		}
+		names = append(names, name)
+	}
+	return names
+}
+
+// serviceImages maps each service name to its `image` value.
+func serviceImages(yamlContent []byte) (map[string]string, error) {
+	var root yaml.Node
+	if err := yaml.Unmarshal(yamlContent, &root); err != nil {
+		return nil, fmt.Errorf("failed to parse compose config: %v", err)
+	}
+	images := make(map[string]string)
+	forEachServiceImage(&root, func(service string, image *yaml.Node) {
+		images[service] = image.Value
+	})
+	return images, nil
+}
+
+// resolveServiceImages substitutes `services.<name>.image` values from an
+// interpolated compose config into a yaml produced with --no-interpolate.
+//
+// Image references are the one field that must be concrete at build time,
+// because each is matched against an image loader target and rewritten to a
+// content-derived unique tag for test isolation. Everything else keeps its
+// ${VAR} references so docker-compose resolves them at runtime.
+//
+// It returns the updated yaml plus a list of references that stayed
+// unresolved, for the caller to report.
+func resolveServiceImages(yamlContent []byte, resolved map[string]string, available map[string]struct{}) ([]byte, []string, error) {
+	var root yaml.Node
+	if err := yaml.Unmarshal(yamlContent, &root); err != nil {
+		return nil, nil, fmt.Errorf("failed to parse merged YAML for image resolution: %v", err)
+	}
+	var unresolved []string
+	changed := false
+	forEachServiceImage(&root, func(service string, image *yaml.Node) {
+		value, found := resolved[service]
+		if found && value == image.Value {
+			return // already concrete; nothing to substitute
+		}
+		var undefined []string
+		for _, name := range composeVarRefs(image.Value) {
+			if _, defined := available[name]; !defined {
+				undefined = append(undefined, name)
+			}
+		}
+		if !found || len(undefined) > 0 {
+			detail := ""
+			if len(undefined) > 0 {
+				detail = fmt.Sprintf(" (undefined: %s)", strings.Join(undefined, ", "))
+			}
+			unresolved = append(unresolved, fmt.Sprintf("services.%s.image: %s%s", service, image.Value, detail))
+			return
+		}
+		debugLog("Resolved service image: services.%s.image %s -> %s", service, image.Value, value)
+		image.Value = value
+		changed = true
+	})
+	if !changed {
+		return yamlContent, unresolved, nil
+	}
+	out, err := encodeYAML(&root)
+	if err != nil {
+		return nil, nil, err
+	}
+	return out, unresolved, nil
+}
+
+// rewriteComposeYAML walks `services.*.image` in the merged compose YAML and
+// replaces any reference matching an original loader tag with its unique tag.
+// External references (no loader registered) are left untouched.
+func rewriteComposeYAML(yamlContent []byte, mapping map[string]string) ([]byte, error) {
+	var root yaml.Node
+	if err := yaml.Unmarshal(yamlContent, &root); err != nil {
+		return nil, fmt.Errorf("failed to parse merged YAML for rewriting: %v", err)
+	}
+	changed := false
+	forEachServiceImage(&root, func(_ string, image *yaml.Node) {
+		original := image.Value
+		if unique, found := mapping[original]; found {
+			debugLog("Rewriting service image: %s -> %s", original, unique)
+			image.Value = unique
+			changed = true
+		} else if stripped := strings.TrimPrefix(original, "docker.io/"); stripped != original {
+			if unique, found := mapping[stripped]; found {
+				debugLog("Rewriting service image (stripped docker.io): %s -> %s", original, unique)
+				image.Value = unique
+				changed = true
+			}
+		}
+	})
+	if !changed {
+		return yamlContent, nil
+	}
+	return encodeYAML(&root)
+}
+
+// composeArgs returns a fresh slice. The base slice is shared by every compose
+// invocation, so appending to it in place would let one invocation clobber
+// another's arguments.
+func composeArgs(base []string, extra ...string) []string {
+	return slices.Concat(base, extra)
+}
+
+func runCompose(dockerCompose string, env []string, args ...string) ([]byte, error) {
+	debugLog("Running docker-compose: %s %v", dockerCompose, args)
+	cmd := exec.Command(dockerCompose, args...)
+	cmd.Env = env
+	cmd.Stderr = os.Stderr
+	return cmd.Output()
+}
+
+// resolveImagesAtBuildTime fills in `services.*.image` in a merged yaml that
+// was produced with --no-interpolate, by re-running config with interpolation
+// enabled and copying just the image values across.
+//
+// Image references are the one field that has to be concrete at build time,
+// because each is matched against an image loader target and rewritten to a
+// content-derived unique tag. When requireResolved is set, a reference whose
+// variables cannot be interpolated is a hard error rather than a silently
+// empty string.
+func resolveImagesAtBuildTime(dockerCompose string, cmdArgs, env []string, merged []byte, requireResolved bool) ([]byte, error) {
+	raw, err := serviceImages(merged)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read service images: %v", err)
+	}
+	// Interpolating costs a second compose invocation, so only pay for it when
+	// an image actually references a variable.
+	needsResolution := false
+	for _, image := range raw {
+		if hasVariableRef(image) {
+			needsResolution = true
+			break
+		}
+	}
+	if !needsResolution {
+		return merged, nil
+	}
+
+	interpolated, err := runCompose(dockerCompose, env, composeArgs(cmdArgs, "config", "--format=yaml")...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to run docker-compose config for image resolution: %v", err)
+	}
+	resolved, err := serviceImages(interpolated)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read interpolated service images: %v", err)
+	}
+
+	// The names compose can interpolate from, used to tell a genuinely
+	// resolved image reference from one that silently became empty.
+	available := make(map[string]struct{}, len(env))
+	for _, pair := range env {
+		if key, _, found := strings.Cut(pair, "="); found {
+			available[key] = struct{}{}
+		}
+	}
+
+	out, unresolved, err := resolveServiceImages(merged, resolved, available)
+	if err != nil {
+		return nil, err
+	}
+	if len(unresolved) > 0 && requireResolved {
+		return nil, fmt.Errorf(
+			"image references must resolve at build time so they can be matched to an image loader, "+
+				"but these are still unresolved:\n  %s\n"+
+				"Declare the variables in the `interpolation_env` attribute, or give them defaults "+
+				"(e.g. ${TAG:-latest}) in the compose file",
+			strings.Join(unresolved, "\n  "))
+	}
+	return out, nil
 }
 
 func main() {
@@ -339,11 +545,16 @@ func main() {
 		debugLog("Using project name: %s", args.ProjectName)
 	}
 
-	configArgs := append(cmdArgs, "config", "--format=yaml")
-	debugLog("Running docker-compose config: %s %v", args.DockerCompose, configArgs)
-	configCmd := exec.Command(args.DockerCompose, configArgs...)
-	configCmd.Stderr = os.Stderr
-	output, err := configCmd.Output()
+	// Declared values win over anything inherited from the action environment:
+	// os/exec keeps the last occurrence of a duplicated key.
+	composeEnv := append(os.Environ(), args.Env...)
+	debugLog("Declared interpolation environment: %v", args.Env)
+
+	configArgs := []string{"config", "--format=yaml"}
+	if args.NoInterpolate {
+		configArgs = append(configArgs, "--no-interpolate")
+	}
+	output, err := runCompose(args.DockerCompose, composeEnv, composeArgs(cmdArgs, configArgs...)...)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error running docker-compose config: %v\n", err)
 		os.Exit(1)
@@ -418,14 +629,22 @@ func main() {
 		return loaderEntries[i].LoaderRlocation < loaderEntries[j].LoaderRlocation
 	})
 
+	// Under --no-interpolate the image fields came through with their ${VAR}
+	// references intact, but those have to be concrete to match a loader.
+	if args.NoInterpolate && (len(loaderEntries) > 0 || args.OutputRuntime != "") {
+		output, err = resolveImagesAtBuildTime(
+			args.DockerCompose, cmdArgs, composeEnv, output, len(loaderEntries) > 0)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+	}
+
 	// Validate every image referenced in the compose config has a loader,
 	// unless it's pinned via "@sha256:..." (user-managed external pin).
-	if len(loaderEntries) > 0 || args.OutputRuntime != "" {
-		imagesArgs := append(cmdArgs, "config", "--images")
-		debugLog("Running docker-compose config --images: %s %v", args.DockerCompose, imagesArgs)
-		imagesCmd := exec.Command(args.DockerCompose, imagesArgs...)
-		imagesCmd.Stderr = os.Stderr
-		imagesOutput, err := imagesCmd.Output()
+	if len(loaderEntries) > 0 {
+		imagesOutput, err := runCompose(args.DockerCompose, composeEnv,
+			composeArgs(cmdArgs, "config", "--images")...)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error running docker-compose config --images: %v\n", err)
 			os.Exit(1)
@@ -446,7 +665,7 @@ func main() {
 					break
 				}
 			}
-			if !matched && len(loaderEntries) > 0 {
+			if !matched {
 				avail := make([]string, 0, len(knownOriginals))
 				for k := range knownOriginals {
 					avail = append(avail, k)
