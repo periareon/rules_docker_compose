@@ -178,24 +178,82 @@ register_toolchains(
 <li><strong>Merge and validate docker-compose configurations</strong> using the <code>docker_compose_yaml</code> rule, which combines multiple YAML files and/or inline Starlark configuration, and ensures all referenced images have corresponding loader targets</li>
 <li><strong>Define compose configurations in Starlark</strong> using the <code>docker_compose_config</code> helper, which provides structured parameters mirroring the Compose Specification (services, networks, volumes, configs, secrets)</li>
 <li><strong>Run docker-compose interactively</strong> with the <code>docker_compose_binary</code> rule, which loads images and forwards arguments to docker-compose (e.g. <code>bazel run :compose -- up -d</code>)</li>
-<li><strong>Run integration tests</strong> with the <code>docker_compose_test</code> rule, which automatically starts services, waits for them to be ready, runs your test binary, and cleans up containers</li>
-<li><strong>Verify image integrity</strong> through automatically generated lock files that map image tags to content digests, ensuring the correct images are loaded at runtime</li>
+<li><strong>Run integration tests</strong> with the <code>docker_compose_test</code> rule, which loads images, starts services, waits for them to be running and healthy, runs your test binary, and cleans up containers on every exit path</li>
+<li><strong>Verify image integrity</strong> by recording each image's manifest digest, config digest and layer DiffIDs at build time, tagging loaded images by digest rather than by name, and checking both the images and the running containers against those records.</li>
 </ul>
-<p>The rules integrate seamlessly with <code>rules_oci</code> and <code>rules_img</code>, allowing you to use container images built with Bazel in your docker-compose configurations. They handle the complete lifecycle of docker-compose services during testing, including image loading, service startup, health checking, and cleanup.</p>
+<p>The rules integrate seamlessly with <code>rules_oci</code> and <code>rules_img</code>, allowing you to use container images built with Bazel in your docker-compose configurations. They handle the complete lifecycle of docker-compose services during testing: image loading and verification, service startup with health checks, container verification, and cleanup.</p>
+<h2 id="how-it-works"><a class="header" href="#how-it-works">How it works</a></h2>
+<p>The rules split the work into three stages, and the boundary between them is
+the point of the design: everything that reaches a network happens first,
+everything that is checked happens at build time, and the test only ever
+confirms what the build already decided.</p>
+<ol>
+<li><strong>Fetching</strong> happens in repository rules only. Images enter the build through
+<code>oci.pull</code> or <code>img.pull</code>, pinned by digest, and the compose binary comes from
+the toolchain. Nothing contacts a registry once repository fetching is done.</li>
+<li><strong>Resolution</strong> happens in build actions. <code>docker_compose_yaml</code> merges the
+compose files, matches every <code>image:</code> reference to a loader target, records
+the identities of each image that survive a <code>docker load</code> (the OCI manifest
+digest, the config digest and the layer DiffIDs), and writes a loadable
+tarball per image. It emits two yamls: the merged file with your original
+tags, which is a plain compose file you can share, and a test copy where each
+loader-backed image is rewritten to a content-derived tag with
+<code>pull_policy: never</code>.</li>
+<li><strong>Execution</strong> happens in the test. The runner loads each tarball if its
+content is not already present, tags the image by digest with its unique
+tag, and verifies the result. It then starts compose, waits for every service
+to be running and healthy, verifies that each container runs the image ID it
+just checked, runs your test binary, captures the compose logs and tears the
+project down on every exit path.</li>
+</ol>
+<h2 id="philosophy"><a class="header" href="#philosophy">Philosophy</a></h2>
+<ul>
+<li><strong>Tags are names, not identities.</strong> A tag in a shared daemon can be
+re-pointed by any other test, developer or CI job. The rules never locate an
+image by the tag declared on its loader. They locate it by digest and then
+prove, twice, that what runs is what was built.</li>
+<li><strong>The compose file stays a compose file.</strong> You write <code>image: postgres:16</code> as
+you would anywhere, and Bazel decides what <code>postgres:16</code> is through a pull and
+a loader that claim that name. The merged yaml with original tags works with
+plain <code>docker compose</code> outside Bazel.</li>
+<li><strong>A test cannot depend on the network.</strong> Every image must come through a
+loader. A reference without one is a build error, unless it is pinned to a
+digest and the target opts in with <code>allow_registry_images</code>, which is
+deliberately the uncomfortable path.</li>
+<li><strong>Sharing a daemon is safe by construction.</strong> Tests that use the same built
+image share one content-addressed tag and one image, which is harmless
+because the tag names immutable content and images are never removed. Tests
+that use different images never share a name, because the digest is in the
+name. Projects are named after the target, so containers and networks stay
+separate.</li>
+<li><strong>The environment is inherited, not guessed.</strong> <code>DOCKER_HOST</code>,
+<code>DOCKER_CONTEXT</code>, <code>DOCKER_CONFIG</code> and the TLS variables pass from the shell
+running <code>bazel test</code> into the test, so contexts, rootless daemons and Docker
+Desktop on Linux behave the same under Bazel as in a terminal. Bazel tests
+run with a fixed <code>PATH</code>; a <code>docker</code> binary outside <code>/usr/bin</code> or
+<code>/usr/local/bin</code> needs <code>--action_env=PATH</code> or
+<code>RULES_DOCKER_COMPOSE_ENGINE_BINARY</code>.</li>
+</ul>
+<p>See <a href="./providing_images.html">Providing images</a> for how to declare images with
+<code>rules_oci</code> and <code>rules_img</code>, and the <a href="https://github.com/periareon/rules_docker_compose/tree/main/examples">examples</a>
+for complete workspaces.</p>
 <h2 id="why-not-to-use-these-rules"><a class="header" href="#why-not-to-use-these-rules">Why not to use these rules</a></h2>
 <p>These rules are designed for integration testing scenarios where you need to test against real networked services. However, they come with trade-offs that may not be suitable for all use cases:</p>
 <ul>
 <li>
-<p><strong>Requires network access</strong>: Tests must be marked with <code>requires-network</code> and cannot run in fully sandboxed environments. This means tests may be slower and less reproducible than pure unit tests.</p>
+<p><strong>Requires network access</strong>: Tests carry the <code>requires-network</code> and <code>no-remote-exec</code> execution requirements and cannot run in fully sandboxed or remote environments. This means tests may be slower and less reproducible than pure unit tests.</p>
 </li>
 <li>
-<p><strong>Docker dependency</strong>: Tests require Docker (or compatible container runtime) to be available on the host machine. This adds an external dependency and may not work in all CI/CD environments.</p>
+<p><strong>Docker dependency</strong>: Tests require a Docker daemon reachable from the host machine. The compose binary is downloaded hermetically, but the daemon cannot be. The Docker endpoint variables (<code>DOCKER_HOST</code>, <code>DOCKER_CONTEXT</code>, <code>DOCKER_CONFIG</code> and friends) are inherited from the invoking shell so contexts, rootless daemons and Docker Desktop work under <code>bazel test</code>.</p>
 </li>
 <li>
-<p><strong>Resource tracking limitations</strong>: Bazel cannot track all resources created by docker-compose (spawned containers, networks, volumes). It's highly recommended to use resource tags to limit test execution and prevent resource exhaustion.</p>
+<p><strong>Resource tracking limitations</strong>: Bazel cannot track all resources created by docker-compose (spawned containers, networks, volumes). Tests tear their project down on every exit path, but loaded images are deliberately kept, since other tests may share them. It's highly recommended to use resource tags to limit test execution and prevent resource exhaustion.</p>
 </li>
 <li>
-<p><strong>Port collisions</strong>: Tests that bind to the same host ports cannot run in parallel. If multiple tests use the same port mappings (e.g., <code>"8080:80"</code>), they will conflict when Bazel attempts to run them concurrently. Use unique port mappings per test or ensure tests are tagged to run serially.</p>
+<p><strong>Host ports are assigned at test time</strong>: The host side of every published port is left to the daemon when a test runs, and the resulting address is passed to the test through <code>RULES_DOCKER_COMPOSE_HOST_&lt;SERVICE&gt;_&lt;PORT&gt;</code>. Tests therefore cannot collide on ports, but a test must read its service addresses from the environment rather than hard-code them. The declared ports still apply to <code>bazel run</code>.</p>
+</li>
+<li>
+<p><strong>No registry access at test time</strong>: Every image must be provided through an <code>oci_load</code> or <code>image_load</code> target so that all fetching happens in repository rules. Registry images are only permitted when pinned to a digest and explicitly opted into.</p>
 </li>
 <li>
 <p><strong>Platform-specific behavior</strong>: Container behavior may vary across different platforms and Docker versions, potentially affecting test reproducibility.</p>
@@ -208,7 +266,7 @@ register_toolchains(
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
 
-                            <a rel="next prefetch" href="rules.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="providing_images.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <i class="fa fa-angle-right"></i>
                             </a>
 
@@ -219,7 +277,7 @@ register_toolchains(
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
 
-                    <a rel="next prefetch" href="rules.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="providing_images.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <i class="fa fa-angle-right"></i>
                     </a>
             </nav>

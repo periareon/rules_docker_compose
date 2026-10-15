@@ -166,30 +166,61 @@
 <pre>
 load("@rules_docker_compose//docker_compose:docker_compose_test.bzl", "docker_compose_test")
 
-docker_compose_test(<a href="#docker_compose_test-name">name</a>, <a href="#docker_compose_test-data">data</a>, <a href="#docker_compose_test-delay">delay</a>, <a href="#docker_compose_test-env">env</a>, <a href="#docker_compose_test-env_inherit">env_inherit</a>, <a href="#docker_compose_test-images">images</a>, <a href="#docker_compose_test-interpolate">interpolate</a>, <a href="#docker_compose_test-interpolation_env">interpolation_env</a>,
-                    <a href="#docker_compose_test-test">test</a>, <a href="#docker_compose_test-test_args">test_args</a>, <a href="#docker_compose_test-yamls">yamls</a>)
+docker_compose_test(<a href="#docker_compose_test-name">name</a>, <a href="#docker_compose_test-data">data</a>, <a href="#docker_compose_test-allow_registry_images">allow_registry_images</a>, <a href="#docker_compose_test-delay">delay</a>, <a href="#docker_compose_test-env">env</a>, <a href="#docker_compose_test-env_inherit">env_inherit</a>, <a href="#docker_compose_test-ephemeral_ports">ephemeral_ports</a>,
+                    <a href="#docker_compose_test-images">images</a>, <a href="#docker_compose_test-interpolate">interpolate</a>, <a href="#docker_compose_test-interpolation_env">interpolation_env</a>, <a href="#docker_compose_test-startup_timeout">startup_timeout</a>, <a href="#docker_compose_test-test">test</a>, <a href="#docker_compose_test-test_args">test_args</a>, <a href="#docker_compose_test-yamls">yamls</a>)
 </pre>
 <p>Runs a test with docker-compose services.</p>
 <p>This rule starts docker-compose services, waits for them to be ready, runs a test binary,
 and then tears down the services. The test lifecycle is:</p>
 <ol>
-<li>Loading container images into Docker (under a per-original-tag daemon-level lock)
-and retagging each loaded image to a content-derived unique tag</li>
-<li>Starting services with <code>docker-compose up</code> against the unique-tag-rewritten YAML</li>
-<li>Waiting for containers to be running (with health checks)</li>
+<li>Loading each image's tarball (skipped when the content is already present), tagging it
+by digest with a content-derived unique tag, and verifying the result against the
+identity recorded at build time</li>
+<li>Starting services with <code>docker-compose up</code> against a YAML that references only those
+unique tags with <code>pull_policy: never</code></li>
+<li>Waiting for every service to be running, and healthy when it declares a healthcheck</li>
+<li>Verifying that every container runs the image ID verified in step 1</li>
 <li>Running the test binary with optional arguments</li>
-<li>Cleaning up with <code>docker-compose down</code></li>
+<li>Capturing compose logs and running <code>docker-compose down</code>, on every exit path</li>
 </ol>
-<p>The test requires network access and Docker to be available on the host.</p>
-<p>Supported image loader types:</p>
-<div class="table-wrapper"><table><thead><tr><th>Loader</th><th>Source</th></tr></thead><tbody>
-<tr><td><a href="https://github.com/bazel-contrib/rules_oci/blob/main/docs/load.md#oci_load">oci_load</a></td><td>rules_oci</td></tr>
-<tr><td><a href="https://github.com/bazel-contrib/rules_img/blob/main/docs/load.md#image_load">image_load</a></td><td>rules_img</td></tr>
+<p>Images are never located by the tags declared on loaders, so a tag that something else
+re-pointed cannot leak into a test. Images that other tests share are safe because the
+unique tag names immutable content and images are never removed.</p>
+<h3 id="ports"><a class="header" href="#ports">Ports</a></h3>
+<p>Host ports are the other shared resource on a machine running many tests. By default the
+test yaml drops the host side of every published port, the daemon assigns a free one at
+startup, and the runner hands the result to the test through the environment:</p>
+<div class="table-wrapper"><table><thead><tr><th>Variable</th><th>Value</th></tr></thead><tbody>
+<tr><td><code>RULES_DOCKER_COMPOSE_HOST_&lt;SERVICE&gt;_&lt;PORT&gt;</code></td><td><code>host:port</code> the container port is reachable at, e.g. <code>127.0.0.1:49153</code></td></tr>
+<tr><td><code>RULES_DOCKER_COMPOSE_PORT_&lt;SERVICE&gt;_&lt;PORT&gt;</code></td><td>the host port alone</td></tr>
 </tbody></table>
 </div>
+<p><code>&lt;SERVICE&gt;</code> is the compose service name upper-cased with anything but letters and digits
+replaced by <code>_</code>, and <code>&lt;PORT&gt;</code> is the container port. <code>${NAME}</code> references in <code>test_args</code>
+and in the test target's <code>env</code> are expanded against these at test time, so a test can be
+told <code>-host $${RULES_DOCKER_COMPOSE_HOST_NGINX_80}</code> without knowing the port in advance.
+Two tests publishing the same declared port therefore no longer conflict, and the declared
+port keeps working for <code>bazel run</code>. Set <code>ephemeral_ports = False</code> to opt out.</p>
+<p>Each run also uses its own compose project name, the target-derived name plus a random
+suffix, so concurrent runs of one target, or a run overlapping a crashed predecessor, never
+share containers or networks. Network and volume names derived from the project follow
+suit; names set explicitly in the compose file, like <code>container_name</code>, are kept as written
+and remain the user's responsibility.</p>
+<p>The test requires network access and a Docker daemon reachable from the host. The Docker
+endpoint variables are inherited from the invoking shell.</p>
+<p>Images are declared through <code>oci_load</code> or <code>image_load</code> targets in <code>images</code>, and every
+<code>services.*.image</code> value must equal a tag declared on one of them. The <code>docker_compose_yaml</code>
+rule documentation describes the contract, the supported loaders and the rules_img
+requirements in full; passing a single <code>docker_compose_yaml</code> target as <code>yamls</code> is the
+simplest way to share one set of images between a yaml, a test and a binary.</p>
+<p>The <code>test</code> is normally an ordinary <code>*_test</code> target written with the language's test
+framework and tagged <code>manual</code>, so <code>bazel test //...</code> runs it only through this rule, with
+the services up. Its <code>args</code> and <code>env</code> are honored, which keeps the service address next to
+the test that reads it.</p>
 <p>Example:</p>
 <pre><code class="language-python">load("@rules_docker_compose//docker_compose:docker_compose_test.bzl", "docker_compose_test")
 load("@rules_oci//oci:defs.bzl", "oci_load")
+load("@rules_python//python:defs.bzl", "py_test")
 
 oci_load(
     name = "my_service.load",
@@ -197,12 +228,19 @@ oci_load(
     repo_tags = ["my-service:latest"],
 )
 
+py_test(
+    name = "my_service_test",
+    srcs = ["my_service_test.py"],
+    env = {"SERVICE_HOST": "localhost:8080"},
+    # Only meaningful with the services running, so only run via :integration_test.
+    tags = ["manual"],
+)
+
 docker_compose_test(
     name = "integration_test",
     yamls = ["docker-compose.yaml"],
     images = [":my_service.load"],
-    test = ":my_test_binary",
-    test_args = ["-host", "localhost:8080"],
+    test = ":my_service_test",
     delay = 2,  # Wait 2 seconds after containers start
 )
 </code></pre>
@@ -210,14 +248,17 @@ docker_compose_test(
 <div class="table-wrapper"><table><thead><tr><th style="text-align: left">Name</th><th style="text-align: left">Description</th><th style="text-align: left">Type</th><th style="text-align: left">Mandatory</th><th style="text-align: left">Default</th></tr></thead><tbody>
 <tr><td style="text-align: left"><a id="docker_compose_test-name"></a>name</td><td style="text-align: left">A unique name for this target.</td><td style="text-align: left"><a href="https://bazel.build/concepts/labels#target-names">Name</a></td><td style="text-align: left">required</td><td style="text-align: left"></td></tr>
 <tr><td style="text-align: left"><a id="docker_compose_test-data"></a>data</td><td style="text-align: left">Additional runtime dependencies for the test.</td><td style="text-align: left"><a href="https://bazel.build/concepts/labels">List of labels</a></td><td style="text-align: left">optional</td><td style="text-align: left"><code>[]</code></td></tr>
+<tr><td style="text-align: left"><a id="docker_compose_test-allow_registry_images"></a>allow_registry_images</td><td style="text-align: left">Permit digest-pinned image references that have no loader when merging raw <code>yamls</code>. See the <code>docker_compose_yaml</code> rule for details. Setting this is an error when <code>yamls</code> is a single <code>docker_compose_yaml</code> target.</td><td style="text-align: left">Boolean</td><td style="text-align: left">optional</td><td style="text-align: left"><code>False</code></td></tr>
 <tr><td style="text-align: left"><a id="docker_compose_test-delay"></a>delay</td><td style="text-align: left">Seconds to wait after containers are running before executing the test. Useful for services that need initialization time beyond their health checks.</td><td style="text-align: left">Integer</td><td style="text-align: left">optional</td><td style="text-align: left"><code>1</code></td></tr>
 <tr><td style="text-align: left"><a id="docker_compose_test-env"></a>env</td><td style="text-align: left">Dictionary of strings; values are subject to <code>$(location)</code> and "Make variable" substitution</td><td style="text-align: left"><a href="https://bazel.build/rules/lib/dict">Dictionary: String -&gt; String</a></td><td style="text-align: left">optional</td><td style="text-align: left"><code>{}</code></td></tr>
-<tr><td style="text-align: left"><a id="docker_compose_test-env_inherit"></a>env_inherit</td><td style="text-align: left">Specifies additional environment variables to inherit from the external environment when the test is executed by <code>bazel test</code>.</td><td style="text-align: left">List of strings</td><td style="text-align: left">optional</td><td style="text-align: left"><code>[]</code></td></tr>
-<tr><td style="text-align: left"><a id="docker_compose_test-images"></a>images</td><td style="text-align: left">Image loader targets that provide the container images for the docker-compose services. Each image will be loaded into Docker before <code>docker-compose up</code> is called. See the rule documentation for supported loader types.</td><td style="text-align: left"><a href="https://bazel.build/concepts/labels">List of labels</a></td><td style="text-align: left">optional</td><td style="text-align: left"><code>[]</code></td></tr>
+<tr><td style="text-align: left"><a id="docker_compose_test-env_inherit"></a>env_inherit</td><td style="text-align: left">Specifies additional environment variables to inherit from the external environment when the test is executed by <code>bazel test</code>. The Docker endpoint variables (<code>DOCKER_HOST</code>, <code>DOCKER_CONTEXT</code>, <code>DOCKER_CONFIG</code>, <code>DOCKER_CERT_PATH</code>, <code>DOCKER_TLS_VERIFY</code>, <code>DOCKER_API_VERSION</code>) are always inherited.</td><td style="text-align: left">List of strings</td><td style="text-align: left">optional</td><td style="text-align: left"><code>[]</code></td></tr>
+<tr><td style="text-align: left"><a id="docker_compose_test-ephemeral_ports"></a>ephemeral_ports</td><td style="text-align: left">Let the daemon choose host ports when merging raw <code>yamls</code>. See the <code>docker_compose_yaml</code> rule for details. Setting this is an error when <code>yamls</code> is a single <code>docker_compose_yaml</code> target.</td><td style="text-align: left">Boolean</td><td style="text-align: left">optional</td><td style="text-align: left"><code>True</code></td></tr>
+<tr><td style="text-align: left"><a id="docker_compose_test-images"></a>images</td><td style="text-align: left">Loader targets (<code>oci_load</code> from rules_oci or <code>image_load</code> from rules_img) providing the container images the compose configuration references. Every <code>services.*.image</code> value must equal a tag declared on one of these targets. See the rule documentation for details.</td><td style="text-align: left"><a href="https://bazel.build/concepts/labels">List of labels</a></td><td style="text-align: left">optional</td><td style="text-align: left"><code>[]</code></td></tr>
 <tr><td style="text-align: left"><a id="docker_compose_test-interpolate"></a>interpolate</td><td style="text-align: left">Whether to resolve <code>${VAR}</code> references when merging raw <code>yamls</code> at build time. See the <code>docker_compose_yaml</code> rule for details.<br><br>Setting this is an error when <code>yamls</code> is a single <code>docker_compose_yaml</code> target, which carries its own <code>interpolate</code> setting.<br><br>Note that <code>bazel test</code> runs with a sanitized environment, so a deferred variable also needs to be listed in <code>env_inherit</code> (or set in <code>env</code>) to reach docker-compose at runtime.</td><td style="text-align: left">Boolean</td><td style="text-align: left">optional</td><td style="text-align: left"><code>True</code></td></tr>
 <tr><td style="text-align: left"><a id="docker_compose_test-interpolation_env"></a>interpolation_env</td><td style="text-align: left">Environment variables used to interpolate raw <code>yamls</code> at build time. See the <code>docker_compose_yaml</code> rule for details.<br><br>This is distinct from <code>env</code>, which sets the environment of the test process itself. Setting this is an error when <code>yamls</code> is a single <code>docker_compose_yaml</code> target; declare it on that target instead.</td><td style="text-align: left"><a href="https://bazel.build/rules/lib/dict">Dictionary: String -&gt; String</a></td><td style="text-align: left">optional</td><td style="text-align: left"><code>{}</code></td></tr>
-<tr><td style="text-align: left"><a id="docker_compose_test-test"></a>test</td><td style="text-align: left">The test binary to execute after containers are running. The binary will receive arguments from <code>test_args</code>.</td><td style="text-align: left"><a href="https://bazel.build/concepts/labels">Label</a></td><td style="text-align: left">optional</td><td style="text-align: left"><code>None</code></td></tr>
-<tr><td style="text-align: left"><a id="docker_compose_test-test_args"></a>test_args</td><td style="text-align: left">Arguments to pass to the test binary.</td><td style="text-align: left">List of strings</td><td style="text-align: left">optional</td><td style="text-align: left"><code>[]</code></td></tr>
+<tr><td style="text-align: left"><a id="docker_compose_test-startup_timeout"></a>startup_timeout</td><td style="text-align: left">Seconds to wait for every service to be running, and healthy when it declares a healthcheck, before the test is considered failed.</td><td style="text-align: left">Integer</td><td style="text-align: left">optional</td><td style="text-align: left"><code>60</code></td></tr>
+<tr><td style="text-align: left"><a id="docker_compose_test-test"></a>test</td><td style="text-align: left">The executable to run once the services are up. This is usually a <code>*_test</code> target (<code>py_test</code>, <code>rust_test</code>, <code>go_test</code>, ...) tagged <code>manual</code> so it only runs here; its <code>args</code> and <code>env</code> are honored. A plain binary works too. Arguments from <code>test_args</code> take precedence.</td><td style="text-align: left"><a href="https://bazel.build/concepts/labels">Label</a></td><td style="text-align: left">optional</td><td style="text-align: left"><code>None</code></td></tr>
+<tr><td style="text-align: left"><a id="docker_compose_test-test_args"></a>test_args</td><td style="text-align: left">Arguments to pass to the test binary. <code>${NAME}</code> references are expanded at test time against the test's environment, including the port variables; write them as <code>$${NAME}</code> in BUILD files.</td><td style="text-align: left">List of strings</td><td style="text-align: left">optional</td><td style="text-align: left"><code>[]</code></td></tr>
 <tr><td style="text-align: left"><a id="docker_compose_test-yamls"></a>yamls</td><td style="text-align: left">One or more docker-compose YAML files defining the services to run. Files are merged using <code>docker-compose config</code>.</td><td style="text-align: left"><a href="https://bazel.build/concepts/labels">List of labels</a></td><td style="text-align: left">optional</td><td style="text-align: left"><code>[]</code></td></tr>
 </tbody></table>
 </div>

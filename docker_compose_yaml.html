@@ -166,7 +166,8 @@
 <pre>
 load("@rules_docker_compose//docker_compose:docker_compose_yaml.bzl", "docker_compose_yaml")
 
-docker_compose_yaml(<a href="#docker_compose_yaml-name">name</a>, <a href="#docker_compose_yaml-data">data</a>, <a href="#docker_compose_yaml-out">out</a>, <a href="#docker_compose_yaml-config">config</a>, <a href="#docker_compose_yaml-images">images</a>, <a href="#docker_compose_yaml-interpolate">interpolate</a>, <a href="#docker_compose_yaml-interpolation_env">interpolation_env</a>, <a href="#docker_compose_yaml-yamls">yamls</a>)
+docker_compose_yaml(<a href="#docker_compose_yaml-name">name</a>, <a href="#docker_compose_yaml-data">data</a>, <a href="#docker_compose_yaml-out">out</a>, <a href="#docker_compose_yaml-allow_registry_images">allow_registry_images</a>, <a href="#docker_compose_yaml-config">config</a>, <a href="#docker_compose_yaml-ephemeral_ports">ephemeral_ports</a>, <a href="#docker_compose_yaml-images">images</a>,
+                    <a href="#docker_compose_yaml-interpolate">interpolate</a>, <a href="#docker_compose_yaml-interpolation_env">interpolation_env</a>, <a href="#docker_compose_yaml-yamls">yamls</a>)
 </pre>
 <p>Merges docker-compose configurations and validates image references.</p>
 <p>This rule uses <code>docker-compose config</code> to merge one or more docker-compose YAML files
@@ -179,32 +180,81 @@ the YAML files).</p>
 <p>The merged YAML preserves the original image tags declared in your inputs — it is
 diff-reviewable and safe to share outside Bazel (e.g. check it into version control,
 hand off to a teammate's <code>docker compose -f</code> invocation, etc.).</p>
-<p>For each image with a registered loader, the merger ALSO computes a content digest
-(<code>sha256(index.json)</code> for rules_oci, <code>sha256(manifest_file)</code> for rules_img) and emits
-a second YAML where <code>services.*.image</code> references are rewritten to a content-derived
-unique tag of the form <code>&lt;repo&gt;:rdc-&lt;digest12&gt;</code>. That rewritten YAML is consumed only
-by <code>docker_compose_test</code> to isolate parallel test runs on a shared engine.
-<code>docker_compose_binary</code> (and the default output of this rule) use the original tags.</p>
-<p>Supported image loader types:</p>
-<div class="table-wrapper"><table><thead><tr><th>Loader</th><th>Source</th></tr></thead><tbody>
-<tr><td><a href="https://github.com/bazel-contrib/rules_oci/blob/main/docs/load.md#oci_load">oci_load</a></td><td>rules_oci</td></tr>
-<tr><td><a href="https://github.com/bazel-contrib/rules_img/blob/main/docs/load.md#image_load">image_load</a></td><td>rules_img</td></tr>
+<p>For each image with a registered loader, the merger ALSO records the identities that
+survive a <code>docker load</code> (the OCI manifest digest, the image config digest and the layer
+DiffIDs), writes a loadable tarball of the image, and emits a second YAML where
+<code>services.*.image</code> references are rewritten to the content-derived tag
+<code>&lt;repo&gt;:rdc-&lt;manifest digest&gt;</code> with <code>pull_policy: never</code>. That rewritten YAML is consumed
+only by <code>docker_compose_test</code>, which loads the tarball, tags the image by digest and
+verifies it before and after the services start. <code>docker_compose_binary</code> (and the
+default output of this rule) use the original tags.</p>
+<h3 id="images"><a class="header" href="#images">Images</a></h3>
+<p>Every <code>services.*.image</code> value must equal a tag declared on a loader target listed in
+<code>images</code>; that string is the whole contract between the compose file and Bazel. The loader
+is where the image's content is pinned, through an <code>oci.pull</code> or <code>img.pull</code> by digest, while
+the compose file only names it. So <code>image: postgres:16</code> keeps working unchanged outside
+Bazel and, inside Bazel, resolves to whatever digest the pull declares.</p>
+<div class="table-wrapper"><table><thead><tr><th>Loader</th><th>Source</th><th>Tag attribute</th></tr></thead><tbody>
+<tr><td><a href="https://github.com/bazel-contrib/rules_oci/blob/main/docs/load.md#oci_load">oci_load</a></td><td>rules_oci</td><td><code>repo_tags</code></td></tr>
+<tr><td><a href="https://github.com/bazel-contrib/rules_img/blob/main/docs/load.md#image_load">image_load</a></td><td>rules_img</td><td><code>tag</code>, <code>tag_list</code> or <code>tag_file</code></td></tr>
 </tbody></table>
 </div>
-<p>Example with YAML files:</p>
+<p>Only the image content behind a loader is used: the OCI layout of an <code>oci_load</code>, or the
+<code>tarball</code> output group of an <code>image_load</code>. The loader's own script is never run. For
+<code>image_load</code>, the base image's <code>img.pull</code> must therefore use <code>layer_handling = "eager"</code>
+(or <code>"lazy"</code>) rather than the default <code>"shallow"</code>, so every layer is available to build
+the tarball.</p>
+<p>A referenced image without a loader is an error, unless it is pinned to a digest
+(<code>&lt;repo&gt;@sha256:&lt;digest&gt;</code>) and <code>allow_registry_images</code> is set.</p>
+<p>Example with rules_oci:</p>
 <pre><code class="language-python">load("@rules_docker_compose//docker_compose:docker_compose_yaml.bzl", "docker_compose_yaml")
 load("@rules_oci//oci:defs.bzl", "oci_load")
 
+# `@my_image` comes from an `oci.pull` in MODULE.bazel, pinned by digest, or from an
+# `oci_image` built in this repository.
 oci_load(
     name = "my_image.load",
-    image = ":my_image",
+    image = "@my_image",
     repo_tags = ["my-app:latest"],
+)
+
+docker_compose_yaml(
+    name = "compose",
+    # References `image: my-app:latest`.
+    yamls = ["docker-compose.yaml"],
+    images = [":my_image.load"],
+)
+</code></pre>
+<p>Example with rules_img:</p>
+<pre><code class="language-python">load("@rules_docker_compose//docker_compose:docker_compose_yaml.bzl", "docker_compose_yaml")
+load("@rules_img//img:image.bzl", "image_manifest")
+load("@rules_img//img:load.bzl", "image_load")
+load("@rules_img_images.bzl", "image")
+
+# The `img.pull` behind `image("my_base")` must set `layer_handling = "eager"`.
+image_manifest(
+    name = "my_image",
+    base = image("my_base"),
+)
+
+image_load(
+    name = "my_image.load",
+    image = ":my_image",
+    tag = "my-app:latest",
 )
 
 docker_compose_yaml(
     name = "compose",
     yamls = ["docker-compose.yaml"],
     images = [":my_image.load"],
+)
+</code></pre>
+<p>Public images need no change to the compose file. Pull them by digest and let the loader
+claim the name the yaml already uses:</p>
+<pre><code class="language-python">oci_load(
+    name = "postgres.load",
+    image = "@postgres",  # oci.pull(..., digest = "sha256:...")
+    repo_tags = ["postgres:16"],
 )
 </code></pre>
 <p>Example with inline Starlark config:</p>
@@ -236,8 +286,10 @@ docker_compose_yaml(
 <tr><td style="text-align: left"><a id="docker_compose_yaml-name"></a>name</td><td style="text-align: left">A unique name for this target.</td><td style="text-align: left"><a href="https://bazel.build/concepts/labels#target-names">Name</a></td><td style="text-align: left">required</td><td style="text-align: left"></td></tr>
 <tr><td style="text-align: left"><a id="docker_compose_yaml-data"></a>data</td><td style="text-align: left">Additional files referenced by the docker-compose configuration (e.g. env_file, config files, secret files, bind-mount sources). These are made available during the merge action and propagated to consuming rules for runtime availability.</td><td style="text-align: left"><a href="https://bazel.build/concepts/labels">List of labels</a></td><td style="text-align: left">optional</td><td style="text-align: left"><code>[]</code></td></tr>
 <tr><td style="text-align: left"><a id="docker_compose_yaml-out"></a>out</td><td style="text-align: left">Optional output filename for the merged docker-compose YAML. Defaults to <code>{name}/docker-compose.yaml</code>.</td><td style="text-align: left"><a href="https://bazel.build/concepts/labels">Label</a>; <a href="https://bazel.build/reference/be/common-definitions#configurable-attributes">nonconfigurable</a></td><td style="text-align: left">optional</td><td style="text-align: left"><code>None</code></td></tr>
+<tr><td style="text-align: left"><a id="docker_compose_yaml-allow_registry_images"></a>allow_registry_images</td><td style="text-align: left">Permit image references that have no loader target and are pinned to a digest (<code>&lt;repo&gt;@sha256:&lt;digest&gt;</code>). Such images are pulled from their registry when the services start, so the test depends on network access and registry credentials at runtime. Unpinned references without a loader are always an error.</td><td style="text-align: left">Boolean</td><td style="text-align: left">optional</td><td style="text-align: left"><code>False</code></td></tr>
 <tr><td style="text-align: left"><a id="docker_compose_yaml-config"></a>config</td><td style="text-align: left">A JSON-encoded docker-compose configuration string. Use <code>docker_compose_config()</code> to produce this value from structured Starlark dicts. Can be used alone or combined with <code>yamls</code>.</td><td style="text-align: left">String</td><td style="text-align: left">optional</td><td style="text-align: left"><code>""</code></td></tr>
-<tr><td style="text-align: left"><a id="docker_compose_yaml-images"></a>images</td><td style="text-align: left">Image loader targets that provide the container images referenced in the configuration. Each image referenced in the docker-compose config must have a corresponding loader target. See the rule documentation for supported loader types.</td><td style="text-align: left"><a href="https://bazel.build/concepts/labels">List of labels</a></td><td style="text-align: left">optional</td><td style="text-align: left"><code>[]</code></td></tr>
+<tr><td style="text-align: left"><a id="docker_compose_yaml-ephemeral_ports"></a>ephemeral_ports</td><td style="text-align: left">Let the daemon choose the host port for every published port when the configuration is used by a <code>docker_compose_test</code>, instead of the host port declared in the compose file. The runner reads the assigned ports after startup and passes them to the test as <code>RULES_DOCKER_COMPOSE_HOST_&lt;SERVICE&gt;_&lt;PORT&gt;</code> and <code>RULES_DOCKER_COMPOSE_PORT_&lt;SERVICE&gt;_&lt;PORT&gt;</code>. The merged yaml and <code>docker_compose_binary</code> keep the declared ports. Set to <code>False</code> only when a test genuinely needs a fixed host port, accepting that it then cannot run alongside anything else using it.</td><td style="text-align: left">Boolean</td><td style="text-align: left">optional</td><td style="text-align: left"><code>True</code></td></tr>
+<tr><td style="text-align: left"><a id="docker_compose_yaml-images"></a>images</td><td style="text-align: left">Loader targets (<code>oci_load</code> from rules_oci or <code>image_load</code> from rules_img) providing the container images the compose configuration references. Every <code>services.*.image</code> value must equal a tag declared on one of these targets. See the rule documentation for details.</td><td style="text-align: left"><a href="https://bazel.build/concepts/labels">List of labels</a></td><td style="text-align: left">optional</td><td style="text-align: left"><code>[]</code></td></tr>
 <tr><td style="text-align: left"><a id="docker_compose_yaml-interpolate"></a>interpolate</td><td style="text-align: left">Whether to resolve <code>${VAR}</code> references when merging.<br><br>When <code>True</code> (the default), <code>docker-compose config</code> interpolates every variable at build time. Bazel actions run with a sanitized environment, so a variable that isn't declared in <code>interpolation_env</code> resolves to an empty string.<br><br>Set to <code>False</code> to keep <code>${VAR}</code> references verbatim in the merged YAML so docker-compose resolves them at runtime instead — the right choice for per-developer or per-machine values like <code>${USER}</code>. <code>services.*.image</code> is always resolved at build time regardless, because each image reference must be matched to a loader target; declare any variables it uses in <code>interpolation_env</code>.</td><td style="text-align: left">Boolean</td><td style="text-align: left">optional</td><td style="text-align: left"><code>True</code></td></tr>
 <tr><td style="text-align: left"><a id="docker_compose_yaml-interpolation_env"></a>interpolation_env</td><td style="text-align: left">Environment variables used to interpolate the compose files at build time.<br><br>These are visible only to the merge action, not to the containers. Because the values are declared in the BUILD file rather than read from the invoking shell, they keep the merged YAML hermetic and correctly cached.<br><br>When <code>interpolate = False</code> this applies to <code>services.*.image</code> only, since that is the only field still resolved at build time; every other reference is left for docker-compose to resolve at runtime.<br><br>To set variables the containers see at runtime, use the compose file's own <code>environment</code>/<code>env_file</code> keys. To let a variable come from the host at runtime, set <code>interpolate = False</code> and (for <code>bazel test</code>) list it in the <code>env_inherit</code> attribute of <code>docker_compose_test</code>.</td><td style="text-align: left"><a href="https://bazel.build/rules/lib/dict">Dictionary: String -&gt; String</a></td><td style="text-align: left">optional</td><td style="text-align: left"><code>{}</code></td></tr>
 <tr><td style="text-align: left"><a id="docker_compose_yaml-yamls"></a>yamls</td><td style="text-align: left">One or more docker-compose YAML files to merge. Files are merged in order using <code>docker-compose config</code>. At least one of <code>yamls</code> or <code>config</code> must be provided.</td><td style="text-align: left"><a href="https://bazel.build/concepts/labels">List of labels</a></td><td style="text-align: left">optional</td><td style="text-align: left"><code>[]</code></td></tr>

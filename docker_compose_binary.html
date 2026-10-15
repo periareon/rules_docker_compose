@@ -171,17 +171,12 @@ docker_compose_binary(<a href="#docker_compose_binary-name">name</a>, <a href="#
 <p>Creates a runnable target for invoking docker-compose with a generated configuration.</p>
 <p>This rule consumes a <code>docker_compose_yaml</code> target and produces an executable that:</p>
 <ol>
-<li>Loads container images into Docker using the specified loader targets</li>
+<li>Loads the container images recorded by the <code>docker_compose_yaml</code> target, tags each by
+digest with the names declared on its loader, and verifies them against the build output</li>
 <li>Runs <code>docker-compose -f &lt;yaml&gt; &lt;args...&gt;</code> forwarding all command-line arguments</li>
 </ol>
 <p>Use this rule when you need to interactively manage docker-compose services
 (e.g. <code>bazel run :compose -- up -d</code>, <code>bazel run :compose -- down</code>).</p>
-<p>Supported image loader types:</p>
-<div class="table-wrapper"><table><thead><tr><th>Loader</th><th>Source</th></tr></thead><tbody>
-<tr><td><a href="https://github.com/bazel-contrib/rules_oci/blob/main/docs/load.md#oci_load">oci_load</a></td><td>rules_oci</td></tr>
-<tr><td><a href="https://github.com/bazel-contrib/rules_img/blob/main/docs/load.md#image_load">image_load</a></td><td>rules_img</td></tr>
-</tbody></table>
-</div>
 <p>Example:</p>
 <pre><code class="language-python">load("@rules_docker_compose//docker_compose:defs.bzl", "docker_compose_binary", "docker_compose_yaml")
 load("@rules_oci//oci:defs.bzl", "oci_load")
@@ -212,7 +207,7 @@ bazel run :compose -- ps
 <p><strong>ATTRIBUTES</strong></p>
 <div class="table-wrapper"><table><thead><tr><th style="text-align: left">Name</th><th style="text-align: left">Description</th><th style="text-align: left">Type</th><th style="text-align: left">Mandatory</th><th style="text-align: left">Default</th></tr></thead><tbody>
 <tr><td style="text-align: left"><a id="docker_compose_binary-name"></a>name</td><td style="text-align: left">A unique name for this target.</td><td style="text-align: left"><a href="https://bazel.build/concepts/labels#target-names">Name</a></td><td style="text-align: left">required</td><td style="text-align: left"></td></tr>
-<tr><td style="text-align: left"><a id="docker_compose_binary-images"></a>images</td><td style="text-align: left">Image loader targets that provide the container images for the docker-compose services. Each image will be loaded into Docker before docker-compose is invoked. See the rule documentation for supported loader types.</td><td style="text-align: left"><a href="https://bazel.build/concepts/labels">List of labels</a></td><td style="text-align: left">optional</td><td style="text-align: left"><code>[]</code></td></tr>
+<tr><td style="text-align: left"><a id="docker_compose_binary-images"></a>images</td><td style="text-align: left">Additional loader targets. Images are normally declared on the <code>docker_compose_yaml</code> target passed as <code>yaml</code>, which already carries everything needed to load and verify them. See <code>docker_compose_yaml.images</code>.</td><td style="text-align: left"><a href="https://bazel.build/concepts/labels">List of labels</a></td><td style="text-align: left">optional</td><td style="text-align: left"><code>[]</code></td></tr>
 <tr><td style="text-align: left"><a id="docker_compose_binary-yaml"></a>yaml</td><td style="text-align: left">A <code>docker_compose_yaml</code> target providing the merged docker-compose configuration.</td><td style="text-align: left"><a href="https://bazel.build/concepts/labels">Label</a></td><td style="text-align: left">required</td><td style="text-align: left"></td></tr>
 </tbody></table>
 </div>
