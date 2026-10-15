@@ -1,0 +1,5 @@
+services:
+    nginx:
+        image: rules_docker_compose/verification/nginx:latest
+        ports:
+            - "18082:80"

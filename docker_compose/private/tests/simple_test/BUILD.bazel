@@ -3,5 +3,5 @@ load("@rules_go//go:def.bzl", "go_binary")
 go_binary(
     name = "simple_tester",
     srcs = ["simple_tester.go"],
-    visibility = ["//docker_compose/private/tests/simple_test:__subpackages__"],
+    visibility = ["//docker_compose/private/tests:__subpackages__"],
 )

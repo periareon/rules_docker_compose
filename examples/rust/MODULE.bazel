@@ -15,9 +15,14 @@ local_path_override(
     path = "../../",
 )
 
-# TODO: https://github.com/bazel-contrib/rules_oci/issues/575
-# `aspect_bazel_lib` is unfortunately required by `rules_oci`
-bazel_dep(name = "aspect_bazel_lib", version = "2.20.0")
+# Consume a release that includes https://github.com/bazel-contrib/rules_oci/pull/891
+# This is not required for consumers.
+archive_override(
+    module_name = "rules_oci",
+    integrity = "sha256-JD6sh+xB1o0dnm0hiEpQ7CjgMfcCsLn83H+Xw/PVOJo=",
+    strip_prefix = "rules_oci-2.3.3",
+    urls = ["https://github.com/bazel-contrib/rules_oci/releases/download/v2.3.3/rules_oci-v2.3.3.tar.gz"],
+)
 
 ###############################################################################
 ## Rust external crates

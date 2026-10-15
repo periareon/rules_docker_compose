@@ -1,0 +1,75 @@
+load("@rules_oci//oci:defs.bzl", "oci_image", "oci_load")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+load("//docker_compose:docker_compose_binary.bzl", "docker_compose_binary")
+load("//docker_compose:docker_compose_test.bzl", "docker_compose_test")
+load("//docker_compose:docker_compose_yaml.bzl", "docker_compose_yaml")
+
+# End-to-end proof of the image verification guarantees. `verification_test`
+# drives `inner` directly, tampering with the daemon between runs the way a
+# stale tag or a concurrent writer would, and asserts on the outcome.
+
+oci_image(
+    name = "nginx",
+    base = "@rules_docker_compose_test_oci_nginx",
+    # rules_oci does not support windows: https://github.com/bazel-contrib/rules_oci/issues/53
+    target_compatible_with = select({
+        "@platforms//os:windows": ["@platforms//:incompatible"],
+        "//conditions:default": [],
+    }),
+)
+
+oci_load(
+    name = "nginx.load",
+    image = ":nginx",
+    repo_tags = [
+        "rules_docker_compose/verification/nginx:latest",
+    ],
+)
+
+docker_compose_test(
+    name = "inner",
+    images = [":nginx.load"],
+    # Only ever run through `verification_test`.
+    tags = [
+        "manual",
+        "requires-docker",
+    ],
+    test = "//docker_compose/private/tests/simple_test:simple_tester",
+    test_args = [
+        "-host",
+        "$${RULES_DOCKER_COMPOSE_HOST_NGINX_80}",
+    ],
+    yamls = ["docker-compose.yaml"],
+)
+
+sh_test(
+    name = "verification_test",
+    size = "medium",
+    srcs = ["verification_test.sh"],
+    data = [":inner"],
+    env = {
+        "INNER_ARGS_FILE": "docker_compose/private/tests/verification/inner_data/inner.args.txt",
+        "INNER_BINARY": "$(rlocationpath :inner)",
+        # Declared by the test rule rather than predeclared, so it has no label;
+        # its runfiles path is stable though.
+        "INNER_RUNTIME_MANIFEST": "docker_compose/private/tests/verification/inner-docker-compose.yaml.runtime.json",
+    },
+    tags = [
+        "requires-docker",
+        "requires-network",
+    ],
+    deps = ["@bazel_tools//tools/bash/runfiles"],
+)
+
+# Exercises the `bazel run` path, which applies the declared tags after
+# verifying the image by digest.
+docker_compose_yaml(
+    name = "compose_yaml",
+    images = [":nginx.load"],
+    yamls = ["docker-compose.yaml"],
+)
+
+docker_compose_binary(
+    name = "compose",
+    yaml = ":compose_yaml",
+)

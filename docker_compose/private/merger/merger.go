@@ -1,12 +1,9 @@
 package main
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,14 +12,13 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/periareon/rules_docker_compose/docker_compose/private/images"
 	"gopkg.in/yaml.v3"
 )
 
 // debugLog logs a message to stderr if RULES_DOCKER_COMPOSE_DEBUG is set
 func debugLog(format string, args ...interface{}) {
-	if os.Getenv("RULES_DOCKER_COMPOSE_DEBUG") != "" {
-		fmt.Fprintf(os.Stderr, "[DEBUG] "+format+"\n", args...)
-	}
+	images.Debugf(format, args...)
 }
 
 // normalizeLineEndings converts CRLF to LF for consistent output across platforms
@@ -93,39 +89,25 @@ type Args struct {
 	DataManifest        string
 	OutputRlocationpath string
 	NoInterpolate       bool
+	AllowRegistryImages bool
+	RequireLoaders      bool
+	KeepPublishedPorts  bool
 	Files               []string
 	ImageManifests      []string
 	Env                 []string
 }
 
-// ImageManifest is the per-loader manifest emitted by the bzl rule and
-// consumed by the merger. It identifies the loader, the file used to
-// compute the content digest, and the list of tags the loader writes to.
+// ImageManifest is the per-image description emitted by the bzl rule. It
+// points at the image content (an OCI layout directory from rules_oci, or an
+// OCI layout tarball from rules_img), the files listing the tags the user
+// declared, and where to write the loadable tarball.
 type ImageManifest struct {
-	Label           string   `json:"label"`
-	LoaderRlocation string   `json:"loader_rlocationpath"`
-	TagFilePaths    []string `json:"tag_file_paths"`
-	OCILayoutDir    string   `json:"oci_layout_dir"`
-	ManifestFile    string   `json:"manifest_file"`
-}
-
-// TagRewrite records a single original->unique tag mapping for one loader.
-type TagRewrite struct {
-	Original string `json:"original"`
-	Unique   string `json:"unique"`
-}
-
-// LoaderEntry is one loader plus all the tag rewrites it produces.
-type LoaderEntry struct {
-	LoaderRlocation string       `json:"loader_rlocationpath"`
-	Tags            []TagRewrite `json:"tags"`
-}
-
-// RuntimeManifest is the sidecar JSON written by the merger and consumed
-// at runtime by the runner/launcher. It tells them which loaders to run
-// and what retag mappings to apply under the daemon-level lock.
-type RuntimeManifest struct {
-	Loaders []LoaderEntry `json:"loaders"`
+	Label        string   `json:"label"`
+	TagFilePaths []string `json:"tag_file_paths"`
+	OCILayoutDir string   `json:"oci_layout_dir"`
+	Tarball      string   `json:"tarball"`
+	TarOut       string   `json:"tar_out"`
+	TarRlocation string   `json:"tar_rlocationpath"`
 }
 
 func parseArgs() (*Args, error) {
@@ -138,6 +120,9 @@ func parseArgs() (*Args, error) {
 	flag.StringVar(&args.DataManifest, "data-manifest", "", "Path to JSON manifest mapping data file execpaths to rlocationpaths")
 	flag.StringVar(&args.OutputRlocationpath, "output-rlocationpath", "", "Rlocationpath of the output YAML file (for computing relative paths)")
 	flag.BoolVar(&args.NoInterpolate, "no-interpolate", false, "Leave ${VAR} references in the merged yaml unresolved so docker-compose interpolates them at runtime")
+	flag.BoolVar(&args.AllowRegistryImages, "allow-registry-images", false, "Permit digest-pinned image references that have no loader and are pulled from a registry at runtime")
+	flag.BoolVar(&args.RequireLoaders, "require-loaders", false, "Fail at build time for any image reference without a loader, even when no loaders are declared (set for merges owned by a test)")
+	flag.BoolVar(&args.KeepPublishedPorts, "keep-published-ports", false, "Keep the declared host ports in the test yaml instead of letting the daemon pick free ones")
 	var files flagArray
 	flag.Var(&files, "file", "Docker compose yaml file to merge (can be specified multiple times)")
 	var imageManifests flagArray
@@ -200,74 +185,74 @@ func readTagsFromTagFiles(tagFilePaths []string) ([]string, error) {
 	return tags, nil
 }
 
-// computeContentDigest computes sha256 of the file (or, for an OCI layout dir,
-// the index.json inside it). The result captures all image content because both
-// OCI manifests and rules_img manifests reference their content by digest.
-func computeContentDigest(manifest ImageManifest) (string, error) {
-	var target string
-	if manifest.OCILayoutDir != "" {
-		target = filepath.Join(manifest.OCILayoutDir, "index.json")
-	} else if manifest.ManifestFile != "" {
-		target = manifest.ManifestFile
-	} else {
-		return "", fmt.Errorf("image manifest %s has neither oci_layout_dir nor manifest_file", manifest.Label)
+// prepareImage resolves the identity of one loader-backed image, writes its
+// loadable tarball, and returns the runtime manifest entry describing it.
+//
+// The unique tag is derived from the manifest digest, which is what the
+// containerd image store reports as the image ID after a load. The classic
+// store reports the config digest instead; both are recorded so the runner can
+// recognise either.
+func prepareImage(manifest ImageManifest, tags []string) (*images.Image, error) {
+	var src images.Source
+	switch {
+	case manifest.OCILayoutDir != "":
+		src = images.LayoutSource{Dir: manifest.OCILayoutDir}
+	case manifest.Tarball != "":
+		src = images.TarSource{Path: manifest.Tarball}
+	default:
+		return nil, fmt.Errorf("image manifest %s has neither oci_layout_dir nor tarball", manifest.Label)
+	}
+	if manifest.TarOut == "" {
+		return nil, fmt.Errorf("image manifest %s has no tar_out", manifest.Label)
 	}
 
-	f, err := os.Open(target)
+	identity, err := images.Describe(src, images.HostPlatform())
 	if err != nil {
-		return "", fmt.Errorf("failed to open digest source %s: %v", target, err)
+		return nil, fmt.Errorf("failed to describe image %s: %v", manifest.Label, err)
 	}
-	defer f.Close()
-	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return "", fmt.Errorf("failed to hash %s: %v", target, err)
-	}
-	return hex.EncodeToString(h.Sum(nil)), nil
-}
 
-// uniqueTagFor takes an original tag (repo[:tag] or repo) and returns
-// "<repo>:rdc-<digestPrefix>". The original tag part is replaced; everything
-// up to the last ":" is treated as the repository.
-func uniqueTagFor(originalTag, digestHex string) string {
-	prefix := digestHex
-	if len(prefix) > 12 {
-		prefix = prefix[:12]
+	img := &images.Image{
+		Label:          manifest.Label,
+		TarRlocation:   manifest.TarRlocation,
+		OriginalTags:   tags,
+		ManifestDigest: identity.ManifestDescriptor.Digest.String(),
+		ConfigDigest:   identity.ConfigDigest.String(),
+		DiffIDs:        identity.DiffIDs,
+		Platform:       identity.Platform,
 	}
-	repo := originalTag
-	// Strip ":tag" suffix if present, but be careful with "host:port/path:tag"
-	// — the repo's last segment may itself contain a colon (port). We split on
-	// "/" first to isolate the final path segment, then strip any ":tag" from it.
-	slash := strings.LastIndex(originalTag, "/")
-	last := originalTag
-	if slash != -1 {
-		last = originalTag[slash+1:]
-	}
-	if colon := strings.LastIndex(last, ":"); colon != -1 {
-		// repo == everything except the trailing ":tag"
-		if slash != -1 {
-			repo = originalTag[:slash+1] + last[:colon]
-		} else {
-			repo = last[:colon]
+	for _, tag := range tags {
+		unique := images.UniqueTag(tag, img.ManifestDigest)
+		if !slices.Contains(img.UniqueTags, unique) {
+			img.UniqueTags = append(img.UniqueTags, unique)
 		}
 	}
-	return repo + ":rdc-" + prefix
-}
 
-// normalizedTags returns the input tag plus an entry without a leading
-// "docker.io/" prefix (if present). Compose's `--images` output sometimes
-// includes the docker.io/ prefix and sometimes does not, so we match both.
-func normalizedTagForms(tag string) []string {
-	forms := []string{tag}
-	if stripped := strings.TrimPrefix(tag, "docker.io/"); stripped != tag {
-		forms = append(forms, stripped)
+	if err := os.MkdirAll(filepath.Dir(manifest.TarOut), 0o755); err != nil {
+		return nil, err
 	}
-	return forms
+	f, err := os.Create(manifest.TarOut)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create image tarball %s: %v", manifest.TarOut, err)
+	}
+	defer f.Close()
+	ref := images.QualifiedReference(img.UniqueTags[0])
+	if err := images.WriteDualTar(f, src, identity, ref); err != nil {
+		return nil, fmt.Errorf("failed to write image tarball for %s: %v", manifest.Label, err)
+	}
+	debugLog("Image %s: manifest=%s config=%s platform=%s unique=%v",
+		manifest.Label, img.ManifestDigest, img.ConfigDigest, images.PlatformString(img.Platform), img.UniqueTags)
+	return img, nil
 }
 
-// forEachServiceImage walks `services.<name>.image` in a parsed compose
-// document, invoking fn with the service name and the mutable image scalar
-// node. Documents that don't have the expected shape simply yield no calls.
-func forEachServiceImage(root *yaml.Node, fn func(service string, image *yaml.Node)) {
+// normalizedTagForms returns the spellings compose might use for a reference.
+func normalizedTagForms(tag string) []string {
+	return images.NormalizedForms(tag)
+}
+
+// forEachService walks `services.<name>` in a parsed compose document,
+// invoking fn with the service name and its mapping node. Documents that don't
+// have the expected shape simply yield no calls.
+func forEachService(root *yaml.Node, fn func(service string, serviceNode *yaml.Node)) {
 	if root.Kind != yaml.DocumentNode || len(root.Content) == 0 {
 		return
 	}
@@ -282,21 +267,95 @@ func forEachServiceImage(root *yaml.Node, fn func(service string, image *yaml.No
 			continue
 		}
 		for j := 0; j+1 < len(val.Content); j += 2 {
-			name := val.Content[j].Value
-			service := val.Content[j+1]
-			if service.Kind != yaml.MappingNode {
-				continue
-			}
-			for k := 0; k+1 < len(service.Content); k += 2 {
-				skey := service.Content[k]
-				sval := service.Content[k+1]
-				if skey.Value != "image" || sval.Kind != yaml.ScalarNode {
-					continue
-				}
-				fn(name, sval)
+			if service := val.Content[j+1]; service.Kind == yaml.MappingNode {
+				fn(val.Content[j].Value, service)
 			}
 		}
 	}
+}
+
+// mappingValue returns the value node for key in a mapping node, or nil.
+func mappingValue(mapping *yaml.Node, key string) *yaml.Node {
+	for i := 0; i+1 < len(mapping.Content); i += 2 {
+		if mapping.Content[i].Value == key {
+			return mapping.Content[i+1]
+		}
+	}
+	return nil
+}
+
+// forEachServiceImage walks `services.<name>.image`, invoking fn with the
+// service name, the service's mapping node and the mutable image scalar node.
+func forEachServiceImage(root *yaml.Node, fn func(service string, serviceNode *yaml.Node, image *yaml.Node)) {
+	forEachService(root, func(name string, service *yaml.Node) {
+		if image := mappingValue(service, "image"); image != nil && image.Kind == yaml.ScalarNode {
+			fn(name, service, image)
+		}
+	})
+}
+
+// collectPorts records every published container port in the document. When
+// strip is set, the host side of each mapping is removed from the test yaml so
+// the daemon assigns a free port at startup; the runner then discovers it and
+// passes it to the test. Fixed host ports are what make two tests, or a test
+// and anything else on the host, collide.
+//
+// `docker-compose config` always emits the long port syntax, so entries are
+// mappings with `target`, `published` and `protocol` keys.
+func collectPorts(root *yaml.Node, strip bool) []images.PortMapping {
+	var ports []images.PortMapping
+	forEachService(root, func(name string, service *yaml.Node) {
+		list := mappingValue(service, "ports")
+		if list == nil || list.Kind != yaml.SequenceNode {
+			return
+		}
+		for _, entry := range list.Content {
+			if entry.Kind != yaml.MappingNode {
+				continue
+			}
+			target := mappingValue(entry, "target")
+			if target == nil {
+				continue
+			}
+			var targetPort int
+			if _, err := fmt.Sscanf(target.Value, "%d", &targetPort); err != nil {
+				continue
+			}
+			mapping := images.PortMapping{Service: name, Target: targetPort, Protocol: "tcp"}
+			if protocol := mappingValue(entry, "protocol"); protocol != nil {
+				mapping.Protocol = protocol.Value
+			}
+			if published := mappingValue(entry, "published"); published != nil {
+				mapping.Published = published.Value
+				if strip {
+					for i := 0; i+1 < len(entry.Content); i += 2 {
+						if entry.Content[i].Value == "published" {
+							entry.Content = append(entry.Content[:i], entry.Content[i+2:]...)
+							break
+						}
+					}
+					debugLog("Releasing host port for services.%s port %d/%s (declared %s)", name, targetPort, mapping.Protocol, mapping.Published)
+				}
+			}
+			ports = append(ports, mapping)
+		}
+	})
+	return ports
+}
+
+// setMappingValue sets key to a scalar value in a mapping node, replacing an
+// existing entry or appending a new one.
+func setMappingValue(mapping *yaml.Node, key, value string) {
+	for i := 0; i+1 < len(mapping.Content); i += 2 {
+		if mapping.Content[i].Value == key {
+			mapping.Content[i+1] = &yaml.Node{Kind: yaml.ScalarNode, Value: value}
+			return
+		}
+	}
+	mapping.Content = append(mapping.Content,
+		&yaml.Node{Kind: yaml.ScalarNode, Value: key},
+		&yaml.Node{Kind: yaml.ScalarNode, Value: value},
+	)
 }
 
 func encodeYAML(root *yaml.Node) ([]byte, error) {
@@ -354,7 +413,7 @@ func serviceImages(yamlContent []byte) (map[string]string, error) {
 		return nil, fmt.Errorf("failed to parse compose config: %v", err)
 	}
 	images := make(map[string]string)
-	forEachServiceImage(&root, func(service string, image *yaml.Node) {
+	forEachServiceImage(&root, func(service string, _ *yaml.Node, image *yaml.Node) {
 		images[service] = image.Value
 	})
 	return images, nil
@@ -377,7 +436,7 @@ func resolveServiceImages(yamlContent []byte, resolved map[string]string, availa
 	}
 	var unresolved []string
 	changed := false
-	forEachServiceImage(&root, func(service string, image *yaml.Node) {
+	forEachServiceImage(&root, func(service string, _ *yaml.Node, image *yaml.Node) {
 		value, found := resolved[service]
 		if found && value == image.Value {
 			return // already concrete; nothing to substitute
@@ -410,33 +469,79 @@ func resolveServiceImages(yamlContent []byte, resolved map[string]string, availa
 	return out, unresolved, nil
 }
 
-// rewriteComposeYAML walks `services.*.image` in the merged compose YAML and
-// replaces any reference matching an original loader tag with its unique tag.
-// External references (no loader registered) are left untouched.
-func rewriteComposeYAML(yamlContent []byte, mapping map[string]string) ([]byte, error) {
+// rewriteComposeYAML produces the yaml the test runner consumes. Every
+// `services.*.image` matching an original loader tag is replaced with its
+// unique tag and pinned to `pull_policy: never`, so compose can only ever use
+// the image the runner loaded, and unless keepPorts is set the host side of
+// every published port is released so the daemon assigns a free one.
+//
+// It returns the rewritten yaml, a map of rewritten service names to the
+// unique tag each now references, and the published ports.
+func rewriteComposeYAML(yamlContent []byte, mapping map[string]string, keepPorts bool, project string) ([]byte, map[string]string, []images.PortMapping, error) {
 	var root yaml.Node
 	if err := yaml.Unmarshal(yamlContent, &root); err != nil {
-		return nil, fmt.Errorf("failed to parse merged YAML for rewriting: %v", err)
+		return nil, nil, nil, fmt.Errorf("failed to parse merged YAML for rewriting: %v", err)
 	}
-	changed := false
-	forEachServiceImage(&root, func(_ string, image *yaml.Node) {
-		original := image.Value
-		if unique, found := mapping[original]; found {
-			debugLog("Rewriting service image: %s -> %s", original, unique)
-			image.Value = unique
-			changed = true
-		} else if stripped := strings.TrimPrefix(original, "docker.io/"); stripped != original {
-			if unique, found := mapping[stripped]; found {
-				debugLog("Rewriting service image (stripped docker.io): %s -> %s", original, unique)
-				image.Value = unique
-				changed = true
+	services := map[string]string{}
+	forEachServiceImage(&root, func(service string, serviceNode *yaml.Node, image *yaml.Node) {
+		for _, form := range normalizedTagForms(image.Value) {
+			unique, found := mapping[form]
+			if !found {
+				continue
 			}
+			debugLog("Rewriting services.%s.image: %s -> %s", service, image.Value, unique)
+			image.Value = unique
+			setMappingValue(serviceNode, "pull_policy", "never")
+			services[service] = unique
+			return
 		}
 	})
-	if !changed {
-		return yamlContent, nil
+	ports := collectPorts(&root, !keepPorts)
+	releaseProjectNames(&root, project)
+	out, err := encodeYAML(&root)
+	return out, services, ports, err
+}
+
+// releaseProjectNames removes the names `docker-compose config` derived from
+// the project name, so that the project name the runner passes at test time
+// takes effect: the top-level `name`, and `networks.<n>.name` /
+// `volumes.<n>.name` values equal to `<project>_<n>`. Names the user chose
+// explicitly do not match that pattern and are kept.
+func releaseProjectNames(root *yaml.Node, project string) {
+	if project == "" || root.Kind != yaml.DocumentNode || len(root.Content) == 0 {
+		return
 	}
-	return encodeYAML(&root)
+	top := root.Content[0]
+	if top.Kind != yaml.MappingNode {
+		return
+	}
+	for i := 0; i+1 < len(top.Content); i += 2 {
+		key, val := top.Content[i], top.Content[i+1]
+		switch key.Value {
+		case "name":
+			if val.Value == project {
+				top.Content = append(top.Content[:i], top.Content[i+2:]...)
+				i -= 2
+			}
+		case "networks", "volumes":
+			if val.Kind != yaml.MappingNode {
+				continue
+			}
+			for j := 0; j+1 < len(val.Content); j += 2 {
+				entry := val.Content[j+1]
+				if entry.Kind != yaml.MappingNode {
+					continue
+				}
+				derived := project + "_" + val.Content[j].Value
+				for k := 0; k+1 < len(entry.Content); k += 2 {
+					if entry.Content[k].Value == "name" && entry.Content[k+1].Value == derived {
+						entry.Content = append(entry.Content[:k], entry.Content[k+2:]...)
+						break
+					}
+				}
+			}
+		}
+	}
 }
 
 // composeArgs returns a fresh slice. The base slice is shared by every compose
@@ -514,6 +619,69 @@ func resolveImagesAtBuildTime(dockerCompose string, cmdArgs, env []string, merge
 	return out, nil
 }
 
+// validateImageReferences checks every image compose will try to use against
+// the loader-backed set and returns the references that would be pulled from
+// a registry at runtime.
+//
+// Registry references are an error when the target has opted in but failed to
+// pin them, or when the merge is known to feed a test (`strict`): either
+// loaders are declared, or a docker_compose_test owns the merge. A yaml-only
+// target with no loaders is allowed to carry them; the runner refuses to start
+// a test from such a yaml unless `allow_registry_images` is set.
+func validateImageReferences(imageLines []string, knownOriginals map[string]struct{}, allowRegistry, strict bool) ([]string, error) {
+	var avail []string
+	for k := range knownOriginals {
+		avail = append(avail, k)
+	}
+	sort.Strings(avail)
+
+	var registry []string
+	for _, imageLine := range imageLines {
+		imageLine = strings.TrimSpace(imageLine)
+		if imageLine == "" {
+			continue
+		}
+		matched := false
+		for _, form := range normalizedTagForms(imageLine) {
+			if _, ok := knownOriginals[form]; ok {
+				matched = true
+				break
+			}
+		}
+		if matched {
+			debugLog("Validated image has loader: %s", imageLine)
+			continue
+		}
+		pinned := strings.Contains(imageLine, "@sha256:")
+		switch {
+		case pinned && allowRegistry:
+			debugLog("Allowing digest-pinned registry image: %s", imageLine)
+		case allowRegistry:
+			return nil, fmt.Errorf(
+				"image '%s' has no loader and is not pinned to a digest. `allow_registry_images` only permits "+
+					"references of the form `<repo>@sha256:<digest>`. Images with loaders: %v",
+				imageLine, avail)
+		case pinned && strict:
+			return nil, fmt.Errorf(
+				"image '%s' has no loader and would be pulled from a registry at test time. "+
+					"Set `allow_registry_images = True` on the target to permit digest-pinned registry images, "+
+					"or provide the image through an `oci_load`/`image_load` target. Images with loaders: %v",
+				imageLine, avail)
+		case strict:
+			return nil, fmt.Errorf(
+				"image '%s' does not have a loader associated with it and is not pinned to a digest. "+
+					"Provide it through an `oci_load`/`image_load` target in `images`, or pin it as "+
+					"`<repo>@sha256:<digest>` and set `allow_registry_images = True`. Images with loaders: %v",
+				imageLine, avail)
+		default:
+			debugLog("Recording registry image for runtime enforcement: %s", imageLine)
+		}
+		registry = append(registry, imageLine)
+	}
+	sort.Strings(registry)
+	return registry, nil
+}
+
 func main() {
 	debugLog("Starting merger")
 	args, err := parseArgs()
@@ -577,11 +745,12 @@ func main() {
 		output = relativizePaths(output, execrootPrefix, dataManifest, outputRlocationDir)
 	}
 
-	// Load image manifests, compute content digests, derive unique tags.
-	loaderEntries := make([]LoaderEntry, 0, len(args.ImageManifests))
-	// Map original tag (and normalized form) -> unique tag, for YAML rewriting.
+	// Describe every loader-backed image, write its loadable tarball and
+	// derive its unique tags.
+	var runtimeImages []images.Image
+	// Map original tag (and normalized forms) -> unique tag, for YAML rewriting.
 	tagToUnique := make(map[string]string)
-	// Map repo[:tag] -> "" used for the loader-exists validation pass.
+	// Set of original tags in all normalized forms, for the validation pass.
 	knownOriginals := make(map[string]struct{})
 
 	for _, manifestPath := range args.ImageManifests {
@@ -604,45 +773,47 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Error reading tag files for %s: %v\n", manifestPath, err)
 			os.Exit(1)
 		}
-		dgst, err := computeContentDigest(manifest)
+		img, err := prepareImage(manifest, tags)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error computing content digest for %s: %v\n", manifest.Label, err)
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
-		debugLog("Content digest for %s: %s", manifest.Label, dgst)
-
-		entry := LoaderEntry{LoaderRlocation: manifest.LoaderRlocation}
 		for _, tag := range tags {
-			unique := uniqueTagFor(tag, dgst)
-			entry.Tags = append(entry.Tags, TagRewrite{Original: tag, Unique: unique})
+			unique := images.UniqueTag(tag, img.ManifestDigest)
 			for _, form := range normalizedTagForms(tag) {
+				if existing, dup := tagToUnique[form]; dup && existing != unique {
+					fmt.Fprintf(os.Stderr,
+						"Error: tag %s is declared by two different images (%s and another loader); "+
+							"a tag can only map to one image\n", tag, manifest.Label)
+					os.Exit(1)
+				}
 				tagToUnique[form] = unique
 				knownOriginals[form] = struct{}{}
 			}
-			debugLog("Tag mapping: %s -> %s", tag, unique)
 		}
-		loaderEntries = append(loaderEntries, entry)
+		runtimeImages = append(runtimeImages, *img)
 	}
 
-	// Sort loader entries by loader rlocationpath for deterministic output.
-	sort.Slice(loaderEntries, func(i, j int) bool {
-		return loaderEntries[i].LoaderRlocation < loaderEntries[j].LoaderRlocation
+	// Sort for deterministic output.
+	sort.Slice(runtimeImages, func(i, j int) bool {
+		return runtimeImages[i].Label < runtimeImages[j].Label
 	})
 
 	// Under --no-interpolate the image fields came through with their ${VAR}
 	// references intact, but those have to be concrete to match a loader.
-	if args.NoInterpolate && (len(loaderEntries) > 0 || args.OutputRuntime != "") {
+	if args.NoInterpolate && (len(runtimeImages) > 0 || args.OutputRuntime != "") {
 		output, err = resolveImagesAtBuildTime(
-			args.DockerCompose, cmdArgs, composeEnv, output, len(loaderEntries) > 0)
+			args.DockerCompose, cmdArgs, composeEnv, output, len(runtimeImages) > 0)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
 	}
 
-	// Validate every image referenced in the compose config has a loader,
-	// unless it's pinned via "@sha256:..." (user-managed external pin).
-	if len(loaderEntries) > 0 {
+	// Classify every image compose will use, so that nothing is fetched from
+	// a registry at test time without an explicit opt-in.
+	var registryImages []string
+	if len(runtimeImages) > 0 || args.OutputRuntime != "" {
 		imagesOutput, err := runCompose(args.DockerCompose, composeEnv,
 			composeArgs(cmdArgs, "config", "--images")...)
 		if err != nil {
@@ -650,33 +821,11 @@ func main() {
 			os.Exit(1)
 		}
 		imageLines := strings.Split(strings.TrimSpace(string(imagesOutput)), "\n")
-		for _, imageLine := range imageLines {
-			imageLine = strings.TrimSpace(imageLine)
-			if imageLine == "" {
-				continue
-			}
-			if strings.Contains(imageLine, "@sha256:") {
-				continue
-			}
-			matched := false
-			for _, form := range normalizedTagForms(imageLine) {
-				if _, ok := knownOriginals[form]; ok {
-					matched = true
-					break
-				}
-			}
-			if !matched {
-				avail := make([]string, 0, len(knownOriginals))
-				for k := range knownOriginals {
-					avail = append(avail, k)
-				}
-				sort.Strings(avail)
-				fmt.Fprintf(os.Stderr,
-					"Error: image '%s' does not have a loader associated with it. Available images with loaders: %v\n",
-					imageLine, avail)
-				os.Exit(1)
-			}
-			debugLog("Validated image has loader: %s", imageLine)
+		strict := args.RequireLoaders || len(runtimeImages) > 0
+		registryImages, err = validateImageReferences(imageLines, knownOriginals, args.AllowRegistryImages, strict)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
 		}
 	}
 
@@ -695,20 +844,18 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Optionally write a rewritten copy of the YAML where each service image
-	// is replaced with its content-derived unique tag. Only the test runner
-	// consumes this file; the daemon-lock + retag flow only makes sense for
-	// parallel-test isolation.
+	// Write the test yaml: every loader-backed image replaced with its unique
+	// tag and pinned to pull_policy never, and host ports released. Only the
+	// test runner consumes it.
+	services := map[string]string{}
+	var ports []images.PortMapping
 	if args.OutputRewritten != "" {
-		rewrittenSrc := output
-		if len(tagToUnique) > 0 {
-			r, err := rewriteComposeYAML(output, tagToUnique)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error rewriting YAML: %v\n", err)
-				os.Exit(1)
-			}
-			rewrittenSrc = r
+		rewrittenSrc, s, p, err := rewriteComposeYAML(output, tagToUnique, args.KeepPublishedPorts, args.ProjectName)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error rewriting YAML: %v\n", err)
+			os.Exit(1)
 		}
+		services, ports = s, p
 		rewrittenOutput := normalizeLineEndings(rewrittenSrc)
 		debugLog("Rewritten YAML size: %d bytes", len(rewrittenOutput))
 		rewrittenDir := filepath.Dir(args.OutputRewritten)
@@ -723,7 +870,14 @@ func main() {
 	}
 
 	if args.OutputRuntime != "" {
-		runtime := RuntimeManifest{Loaders: loaderEntries}
+		runtime := images.RuntimeManifest{
+			Project:             args.ProjectName,
+			Images:              runtimeImages,
+			Services:            services,
+			Ports:               ports,
+			RegistryImages:      registryImages,
+			AllowRegistryImages: args.AllowRegistryImages,
+		}
 		runtimeJSON, err := json.MarshalIndent(runtime, "", "  ")
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error marshaling runtime manifest: %v\n", err)
