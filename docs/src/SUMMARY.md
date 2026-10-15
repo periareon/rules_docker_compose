@@ -1,6 +1,7 @@
 # Summary
 
 [Introduction](./index.md)
+[Providing images](./providing_images.md)
 
 ---
 

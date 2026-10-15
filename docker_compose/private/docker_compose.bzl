@@ -56,12 +56,20 @@ with docker-compose configurations.
 """,
     fields = {
         "data": "depset[File]: Additional data files referenced by the configuration (env_file, configs, secrets, bind-mount sources).",
+        "image_tars": "depset[File]: A loadable tarball per loader-backed image, consumed by `docker_compose_test` and `docker_compose_binary`.",
         "images": "depset[File]: The image loader executables for each image referenced in the yaml.",
         "runtime_manifest": "File: A JSON manifest mapping each loader to its (original_tag, unique_tag) rewrites, consumed by the runner and launcher.",
         "yaml": "File: The merged docker-compose YAML file with original image tags preserved. This is the user-facing artifact, suitable for sharing outside Bazel.",
         "yaml_deps": "depset[File]: All files which contributed to the merged yaml (input yamls and image manifests).",
         "yaml_rewritten": "File: The merged docker-compose YAML with each loader-backed image rewritten to a content-derived unique tag. Used internally by `docker_compose_test` to isolate parallel test runs on a shared engine.",
     },
+)
+
+# Shared documentation for the `images` attribute of every rule.
+_IMAGES_ATTR_DOC = (
+    "Loader targets (`oci_load` from rules_oci or `image_load` from rules_img) providing the " +
+    "container images the compose configuration references. Every `services.*.image` value must " +
+    "equal a tag declared on one of these targets. See the rule documentation for details."
 )
 
 def _collect_yamls(*, yamls):
@@ -79,65 +87,64 @@ def _collect_yamls(*, yamls):
     return depset(transitive = direct + transitive)
 
 def _create_image_manifests(*, ctx, images, output_fmt):
+    """Declare the per-image description and loadable tarball for each loader target.
+
+    Args:
+        ctx (ctx): The rule's context object.
+        images (list): Loader targets carrying `ImageLoadRepositoryInfo`.
+        output_fmt (str): A path template with `{name}` and `{image}` placeholders, ending in `.json`.
+
+    Returns:
+        tuple: The manifest files, the action inputs they reference, and the tarball outputs.
+    """
     image_inputs = []
     single_image_manifests = []
+    image_tars = []
     for image in images:
-        # Add all tag_files
-        tag_files = image[ImageLoadRepositoryInfo].tag_files
-        if tag_files:
-            image_inputs.extend(tag_files)
+        info = image[ImageLoadRepositoryInfo]
+        image_inputs.extend(info.tag_files)
 
-        # Add the appropriate image file based on format
-        if image[ImageLoadRepositoryInfo].oci_layout:
-            image_inputs.append(image[ImageLoadRepositoryInfo].oci_layout)
-        elif image[ImageLoadRepositoryInfo].manifest_file:
-            image_inputs.append(image[ImageLoadRepositoryInfo].manifest_file)
+        oci_layout_dir = None
+        tarball = None
+        if info.oci_layout:
+            image_inputs.append(info.oci_layout)
+            oci_layout_dir = info.oci_layout.path
+        elif info.tarball:
+            image_inputs.append(info.tarball)
+            tarball = info.tarball.path
+        else:
+            fail("Unable to determine image content for {}".format(image.label))
 
-        single_image_manifest = ctx.actions.declare_file(output_fmt.replace(
+        basename = output_fmt.replace(
             "{name}",
             ctx.label.name,
         ).replace(
             "{image}",
             str(image.label).strip("@").replace("/", "_").replace(":", "_"),
-        ))
-
-        # Set mutually exclusive fields based on image format
-        oci_layout_dir = None
-        manifest_file = None
-        if image[ImageLoadRepositoryInfo].oci_layout:
-            oci_layout_dir = image[ImageLoadRepositoryInfo].oci_layout.path
-        elif image[ImageLoadRepositoryInfo].manifest_file:
-            manifest_file = image[ImageLoadRepositoryInfo].manifest_file.path
-        else:
-            fail("Unable to determine repository info for {}".format(image.label))
-
-        # Collect tag file paths
-        tag_file_paths = []
-        if tag_files:
-            tag_file_paths = [tag_file.path for tag_file in tag_files]
-
-        loader_rlocationpath = _rlocationpath(
-            image[ImageLoadRepositoryInfo].loader,
-            ctx.workspace_name,
         )
+        if not basename.endswith(".json"):
+            fail("output_fmt must end in .json, got {}".format(output_fmt))
+        single_image_manifest = ctx.actions.declare_file(basename)
+        image_tar = ctx.actions.declare_file(basename[:-len(".json")] + ".tar")
 
         ctx.actions.write(
             output = single_image_manifest,
             content = json.encode_indent(
                 struct(
                     label = str(image.label),
-                    loader_rlocationpath = loader_rlocationpath,
-                    tag_file_paths = tag_file_paths,
+                    tag_file_paths = [f.path for f in info.tag_files],
                     oci_layout_dir = oci_layout_dir,
-                    manifest_file = manifest_file,
+                    tarball = tarball,
+                    tar_out = image_tar.path,
+                    tar_rlocationpath = _rlocationpath(image_tar, ctx.workspace_name),
                 ),
                 indent = " " * 4,
             ),
         )
-        image_inputs.extend(image[DefaultInfo].default_runfiles.files.to_list())
         single_image_manifests.append(single_image_manifest)
+        image_tars.append(image_tar)
 
-    return single_image_manifests, image_inputs
+    return single_image_manifests, image_inputs, image_tars
 
 def _docker_compose_yaml_action(
         *,
@@ -149,10 +156,14 @@ def _docker_compose_yaml_action(
         toolchain,
         image_manifests = [],
         image_inputs = [],
+        image_tars = [],
         data_inputs = [],
         config_file = None,
         interpolate = True,
-        interpolation_env = {}):
+        interpolation_env = {},
+        allow_registry_images = False,
+        require_loaders = False,
+        ephemeral_ports = True):
     # Sanitize label for project name: replace @ with AT, + with -, / with _, : with __
     project_name = str(ctx.label).replace("@", "0").replace("+", "-").replace("/", "_").replace(":", "__")
 
@@ -167,6 +178,15 @@ def _docker_compose_yaml_action(
 
     if not interpolate:
         args.add("-no-interpolate")
+
+    if allow_registry_images:
+        args.add("-allow-registry-images")
+
+    if require_loaders:
+        args.add("-require-loaders")
+
+    if not ephemeral_ports:
+        args.add("-keep-published-ports")
 
     # Sorted so the action key doesn't depend on declaration order.
     for key in sorted(interpolation_env):
@@ -203,8 +223,11 @@ def _docker_compose_yaml_action(
         executable = ctx.executable._merger,
         arguments = [args],
         inputs = depset(yamls + image_inputs + image_manifests + data_inputs + extra_inputs),
-        outputs = [output, out_rewritten, out_runtime_manifest],
+        outputs = [output, out_rewritten, out_runtime_manifest] + image_tars,
         tools = toolchain.all_files,
+        # The compose binary comes from the toolchain, so the action has to run
+        # on the platform that toolchain was resolved for.
+        toolchain = TOOLCHAIN_TYPE,
     )
 
     return output, out_rewritten, out_runtime_manifest
@@ -242,7 +265,7 @@ def _docker_compose_yaml_impl(ctx):
 
     images = _collect_images(yamls = ctx.attr.yamls, images = ctx.attr.images)
 
-    image_manifests, image_inputs = _create_image_manifests(
+    image_manifests, image_inputs, image_tars = _create_image_manifests(
         ctx = ctx,
         images = images,
         output_fmt = "{name}_images/{image}.json",
@@ -270,10 +293,13 @@ def _docker_compose_yaml_impl(ctx):
         toolchain = toolchain,
         image_manifests = image_manifests,
         image_inputs = image_inputs,
+        image_tars = image_tars,
         data_inputs = data_files,
         config_file = config_file,
         interpolate = ctx.attr.interpolate,
         interpolation_env = ctx.attr.interpolation_env,
+        allow_registry_images = ctx.attr.allow_registry_images,
+        ephemeral_ports = ctx.attr.ephemeral_ports,
     )
 
     return [
@@ -287,6 +313,7 @@ def _docker_compose_yaml_impl(ctx):
             runtime_manifest = runtime_manifest,
             yaml_deps = yamls,
             images = ctx.attr.images,
+            image_tars = depset(image_tars),
             data = depset(data_files),
         ),
     ]
@@ -308,35 +335,91 @@ The merged YAML preserves the original image tags declared in your inputs — it
 diff-reviewable and safe to share outside Bazel (e.g. check it into version control,
 hand off to a teammate's `docker compose -f` invocation, etc.).
 
-For each image with a registered loader, the merger ALSO computes a content digest
-(`sha256(index.json)` for rules_oci, `sha256(manifest_file)` for rules_img) and emits
-a second YAML where `services.*.image` references are rewritten to a content-derived
-unique tag of the form `<repo>:rdc-<digest12>`. That rewritten YAML is consumed only
-by `docker_compose_test` to isolate parallel test runs on a shared engine.
-`docker_compose_binary` (and the default output of this rule) use the original tags.
+For each image with a registered loader, the merger ALSO records the identities that
+survive a `docker load` (the OCI manifest digest, the image config digest and the layer
+DiffIDs), writes a loadable tarball of the image, and emits a second YAML where
+`services.*.image` references are rewritten to the content-derived tag
+`<repo>:rdc-<manifest digest>` with `pull_policy: never`. That rewritten YAML is consumed
+only by `docker_compose_test`, which loads the tarball, tags the image by digest and
+verifies it before and after the services start. `docker_compose_binary` (and the
+default output of this rule) use the original tags.
 
-Supported image loader types:
+### Images
 
-| Loader | Source |
-|--------|--------|
-| [oci_load](https://github.com/bazel-contrib/rules_oci/blob/main/docs/load.md#oci_load) | rules_oci |
-| [image_load](https://github.com/bazel-contrib/rules_img/blob/main/docs/load.md#image_load) | rules_img |
+Every `services.*.image` value must equal a tag declared on a loader target listed in
+`images`; that string is the whole contract between the compose file and Bazel. The loader
+is where the image's content is pinned, through an `oci.pull` or `img.pull` by digest, while
+the compose file only names it. So `image: postgres:16` keeps working unchanged outside
+Bazel and, inside Bazel, resolves to whatever digest the pull declares.
 
-Example with YAML files:
+| Loader | Source | Tag attribute |
+|--------|--------|---------------|
+| [oci_load](https://github.com/bazel-contrib/rules_oci/blob/main/docs/load.md#oci_load) | rules_oci | `repo_tags` |
+| [image_load](https://github.com/bazel-contrib/rules_img/blob/main/docs/load.md#image_load) | rules_img | `tag`, `tag_list` or `tag_file` |
+
+Only the image content behind a loader is used: the OCI layout of an `oci_load`, or the
+`tarball` output group of an `image_load`. The loader's own script is never run. For
+`image_load`, the base image's `img.pull` must therefore use `layer_handling = "eager"`
+(or `"lazy"`) rather than the default `"shallow"`, so every layer is available to build
+the tarball.
+
+A referenced image without a loader is an error, unless it is pinned to a digest
+(`<repo>@sha256:<digest>`) and `allow_registry_images` is set.
+
+Example with rules_oci:
 ```python
 load("@rules_docker_compose//docker_compose:docker_compose_yaml.bzl", "docker_compose_yaml")
 load("@rules_oci//oci:defs.bzl", "oci_load")
 
+# `@my_image` comes from an `oci.pull` in MODULE.bazel, pinned by digest, or from an
+# `oci_image` built in this repository.
 oci_load(
     name = "my_image.load",
-    image = ":my_image",
+    image = "@my_image",
     repo_tags = ["my-app:latest"],
+)
+
+docker_compose_yaml(
+    name = "compose",
+    # References `image: my-app:latest`.
+    yamls = ["docker-compose.yaml"],
+    images = [":my_image.load"],
+)
+```
+
+Example with rules_img:
+```python
+load("@rules_docker_compose//docker_compose:docker_compose_yaml.bzl", "docker_compose_yaml")
+load("@rules_img//img:image.bzl", "image_manifest")
+load("@rules_img//img:load.bzl", "image_load")
+load("@rules_img_images.bzl", "image")
+
+# The `img.pull` behind `image("my_base")` must set `layer_handling = "eager"`.
+image_manifest(
+    name = "my_image",
+    base = image("my_base"),
+)
+
+image_load(
+    name = "my_image.load",
+    image = ":my_image",
+    tag = "my-app:latest",
 )
 
 docker_compose_yaml(
     name = "compose",
     yamls = ["docker-compose.yaml"],
     images = [":my_image.load"],
+)
+```
+
+Public images need no change to the compose file. Pull them by digest and let the loader
+claim the name the yaml already uses:
+```python
+oci_load(
+    name = "postgres.load",
+    image = "@postgres",  # oci.pull(..., digest = "sha256:...")
+    repo_tags = ["postgres:16"],
 )
 ```
 
@@ -368,6 +451,15 @@ docker_compose_yaml(
 """,
     implementation = _docker_compose_yaml_impl,
     attrs = {
+        "allow_registry_images": attr.bool(
+            doc = """\
+Permit image references that have no loader target and are pinned to a digest
+(`<repo>@sha256:<digest>`). Such images are pulled from their registry when the
+services start, so the test depends on network access and registry credentials
+at runtime. Unpinned references without a loader are always an error.
+""",
+            default = False,
+        ),
         "config": attr.string(
             doc = "A JSON-encoded docker-compose configuration string. Use `docker_compose_config()` to produce this value from structured Starlark dicts. Can be used alone or combined with `yamls`.",
         ),
@@ -375,8 +467,20 @@ docker_compose_yaml(
             doc = "Additional files referenced by the docker-compose configuration (e.g. env_file, config files, secret files, bind-mount sources). These are made available during the merge action and propagated to consuming rules for runtime availability.",
             allow_files = True,
         ),
+        "ephemeral_ports": attr.bool(
+            doc = """\
+Let the daemon choose the host port for every published port when the configuration is
+used by a `docker_compose_test`, instead of the host port declared in the compose file.
+The runner reads the assigned ports after startup and passes them to the test as
+`RULES_DOCKER_COMPOSE_HOST_<SERVICE>_<PORT>` and `RULES_DOCKER_COMPOSE_PORT_<SERVICE>_<PORT>`.
+The merged yaml and `docker_compose_binary` keep the declared ports. Set to `False` only
+when a test genuinely needs a fixed host port, accepting that it then cannot run alongside
+anything else using it.
+""",
+            default = True,
+        ),
         "images": attr.label_list(
-            doc = "Image loader targets that provide the container images referenced in the configuration. Each image referenced in the docker-compose config must have a corresponding loader target. See the rule documentation for supported loader types.",
+            doc = _IMAGES_ATTR_DOC,
             aspects = [image_load_repository_aspect],
         ),
         "interpolate": attr.bool(
@@ -438,8 +542,6 @@ def _docker_compose_binary_impl(ctx):
     yaml = info.yaml
     runtime_manifest = info.runtime_manifest
 
-    images = _collect_images(yamls = [ctx.attr.yaml], images = ctx.attr.images)
-
     is_windows = ctx.executable._launcher.basename.endswith(".exe")
     executable = ctx.actions.declare_file("{}{}".format(
         ctx.label.name,
@@ -455,7 +557,7 @@ def _docker_compose_binary_impl(ctx):
     args_file = ctx.actions.declare_file("{0}_data/{0}.args.txt".format(ctx.label.name))
     runfiles = ctx.runfiles(
         files = [args_file, yaml, runtime_manifest],
-        transitive_files = toolchain.all_files,
+        transitive_files = depset(transitive = [toolchain.all_files, info.image_tars]),
     )
 
     if info.data:
@@ -466,13 +568,6 @@ def _docker_compose_binary_impl(ctx):
     args.add("-docker-compose", _rlocationpath(toolchain.docker_compose, ctx.workspace_name))
     args.add("-yaml", _rlocationpath(yaml, ctx.workspace_name))
     args.add("-runtime-manifest", _rlocationpath(runtime_manifest, ctx.workspace_name))
-
-    # Loader runfiles must be staged so the launcher can resolve and exec each
-    # loader path emitted in the runtime manifest. The launcher reads the loader
-    # list from the runtime manifest itself; no per-loader args are needed.
-    for image in images:
-        image_info = image[ImageLoadRepositoryInfo]
-        runfiles = runfiles.merge(image_info.loader_runfiles)
 
     ctx.actions.write(
         output = args_file,
@@ -503,18 +598,12 @@ Creates a runnable target for invoking docker-compose with a generated configura
 
 This rule consumes a `docker_compose_yaml` target and produces an executable that:
 
-1. Loads container images into Docker using the specified loader targets
+1. Loads the container images recorded by the `docker_compose_yaml` target, tags each by
+   digest with the names declared on its loader, and verifies them against the build output
 2. Runs `docker-compose -f <yaml> <args...>` forwarding all command-line arguments
 
 Use this rule when you need to interactively manage docker-compose services
 (e.g. `bazel run :compose -- up -d`, `bazel run :compose -- down`).
-
-Supported image loader types:
-
-| Loader | Source |
-|--------|--------|
-| [oci_load](https://github.com/bazel-contrib/rules_oci/blob/main/docs/load.md#oci_load) | rules_oci |
-| [image_load](https://github.com/bazel-contrib/rules_img/blob/main/docs/load.md#image_load) | rules_img |
 
 Example:
 ```python
@@ -550,7 +639,11 @@ bazel run :compose -- ps
     implementation = _docker_compose_binary_impl,
     attrs = {
         "images": attr.label_list(
-            doc = "Image loader targets that provide the container images for the docker-compose services. Each image will be loaded into Docker before docker-compose is invoked. See the rule documentation for supported loader types.",
+            doc = (
+                "Additional loader targets. Images are normally declared on the `docker_compose_yaml` target " +
+                "passed as `yaml`, which already carries everything needed to load and verify them. " +
+                "See `docker_compose_yaml.images`."
+            ),
             aspects = [image_load_repository_aspect],
         ),
         "yaml": attr.label(
@@ -651,6 +744,18 @@ def _rlocationpath(file, workspace_name):
 
     return "{}/{}".format(workspace_name, file.short_path)
 
+# Variables the Docker CLI and compose use to select a daemon. They are always
+# inherited so a context, a rootless daemon or Docker Desktop on Linux behaves
+# the same under `bazel test` as in the invoking shell.
+_DOCKER_ENDPOINT_ENV = [
+    "DOCKER_HOST",
+    "DOCKER_CONTEXT",
+    "DOCKER_CONFIG",
+    "DOCKER_CERT_PATH",
+    "DOCKER_TLS_VERIFY",
+    "DOCKER_API_VERSION",
+]
+
 def _docker_compose_test_impl(ctx):
     toolchain = ctx.toolchains[TOOLCHAIN_TYPE]
 
@@ -660,20 +765,21 @@ def _docker_compose_test_impl(ctx):
     if len(ctx.attr.yamls) == 1 and DockerComposeYamlInfo in ctx.attr.yamls[0]:
         # The merge already happened in the `docker_compose_yaml` target, so
         # interpolation is configured there. Fail rather than silently drop it.
-        if not ctx.attr.interpolate or ctx.attr.interpolation_env:
+        if not ctx.attr.interpolate or ctx.attr.interpolation_env or ctx.attr.allow_registry_images or not ctx.attr.ephemeral_ports:
             fail((
-                "`interpolate` and `interpolation_env` have no effect when `yamls` is a " +
-                "single `docker_compose_yaml` target. Set them on {} instead."
+                "`interpolate`, `interpolation_env`, `allow_registry_images` and `ephemeral_ports` have no " +
+                "effect when `yamls` is a single `docker_compose_yaml` target. Set them on {} instead."
             ).format(ctx.attr.yamls[0].label))
 
         info = ctx.attr.yamls[0][DockerComposeYamlInfo]
         yaml = info.yaml_rewritten
         runtime_manifest = info.runtime_manifest
         data_from_yaml = info.data
+        image_tars = info.image_tars
     else:
         yamls = _collect_yamls(yamls = ctx.attr.yamls)
 
-        image_manifests, image_inputs = _create_image_manifests(
+        image_manifests, image_inputs, image_tars = _create_image_manifests(
             ctx = ctx,
             images = images,
             output_fmt = "{name}_images/{image}.json",
@@ -688,9 +794,16 @@ def _docker_compose_test_impl(ctx):
             toolchain = toolchain,
             image_manifests = image_manifests,
             image_inputs = image_inputs,
+            image_tars = image_tars,
             interpolate = ctx.attr.interpolate,
             interpolation_env = ctx.attr.interpolation_env,
+            allow_registry_images = ctx.attr.allow_registry_images,
+            # This merge only ever feeds the test, so an unbacked image is a
+            # build error rather than something deferred to the runner.
+            require_loaders = True,
+            ephemeral_ports = ctx.attr.ephemeral_ports,
         )
+        image_tars = depset(image_tars)
 
     is_windows = ctx.executable._test_runner.basename.endswith(".exe")
     executable = ctx.actions.declare_file("{}{}".format(
@@ -713,7 +826,7 @@ def _docker_compose_test_impl(ctx):
     args_file = ctx.actions.declare_file("{0}_data/{0}.args.txt".format(ctx.label.name))
     runfiles = ctx.runfiles(
         files = [args_file, yaml, runtime_manifest],
-        transitive_files = toolchain.all_files,
+        transitive_files = depset(transitive = [toolchain.all_files, image_tars]),
     )
 
     if data_from_yaml:
@@ -727,7 +840,9 @@ def _docker_compose_test_impl(ctx):
 
     if ctx.attr.delay:
         args.add("-delay", ctx.attr.delay)
+    args.add("-startup-timeout", "{}s".format(ctx.attr.startup_timeout))
 
+    test_env_inherit = []
     if ctx.attr.test:
         runfiles = runfiles.merge(ctx.attr.test[DefaultInfo].default_runfiles)
         args.add("-test", _rlocationpath(ctx.executable.test, ctx.workspace_name))
@@ -740,12 +855,15 @@ def _docker_compose_test_impl(ctx):
             for arg in ctx.attr.test[_ArgsInfo].args:
                 args.add("-test-arg", arg)
 
-    # Loader runfiles must be staged so the runner can resolve and exec each
-    # loader path emitted in the runtime manifest. The runner reads the loader
-    # list from the runtime manifest itself; no per-loader args are needed.
-    for image in images:
-        image_info = image[ImageLoadRepositoryInfo]
-        runfiles = runfiles.merge(image_info.loader_runfiles)
+        # A `*_test` target declares its environment through RunEnvironmentInfo,
+        # which Bazel only applies when that target is the one being run. Carry
+        # it across: fixed values go to the runner, inherited names are added to
+        # this test's own inherited set so they reach the inner process.
+        if RunEnvironmentInfo in ctx.attr.test:
+            test_env_info = ctx.attr.test[RunEnvironmentInfo]
+            for key, value in test_env_info.environment.items():
+                args.add("-test-env", "{}={}".format(key, value))
+            test_env_inherit = test_env_info.inherited_environment
 
     ctx.actions.write(
         output = args_file,
@@ -763,12 +881,19 @@ def _docker_compose_test_impl(ctx):
             env = ctx.attr.env | {
                 "RULES_DOCKER_COMPOSE_TEST_ARGS_FILE": _rlocationpath(args_file, ctx.workspace_name),
             },
-            env_inherit = ctx.attr.env_inherit,
+            env_inherit = _DOCKER_ENDPOINT_ENV + [
+                name
+                for name in ctx.attr.env_inherit + test_env_inherit
+                if name not in _DOCKER_ENDPOINT_ENV
+            ],
             targets = ctx.attr.data,
             known_variables = known_variables,
         ),
         testing.ExecutionInfo(
             requirements = {
+                # The test needs the host network to reach the daemon and the
+                # published ports, and a daemon only exists on the local host.
+                "no-remote-exec": "1",
                 "requires-network": "1",
             },
         ),
@@ -781,26 +906,63 @@ Runs a test with docker-compose services.
 This rule starts docker-compose services, waits for them to be ready, runs a test binary,
 and then tears down the services. The test lifecycle is:
 
-1. Loading container images into Docker (under a per-original-tag daemon-level lock)
-   and retagging each loaded image to a content-derived unique tag
-2. Starting services with `docker-compose up` against the unique-tag-rewritten YAML
-3. Waiting for containers to be running (with health checks)
-4. Running the test binary with optional arguments
-5. Cleaning up with `docker-compose down`
+1. Loading each image's tarball (skipped when the content is already present), tagging it
+   by digest with a content-derived unique tag, and verifying the result against the
+   identity recorded at build time
+2. Starting services with `docker-compose up` against a YAML that references only those
+   unique tags with `pull_policy: never`
+3. Waiting for every service to be running, and healthy when it declares a healthcheck
+4. Verifying that every container runs the image ID verified in step 1
+5. Running the test binary with optional arguments
+6. Capturing compose logs and running `docker-compose down`, on every exit path
 
-The test requires network access and Docker to be available on the host.
+Images are never located by the tags declared on loaders, so a tag that something else
+re-pointed cannot leak into a test. Images that other tests share are safe because the
+unique tag names immutable content and images are never removed.
 
-Supported image loader types:
+### Ports
 
-| Loader | Source |
-|--------|--------|
-| [oci_load](https://github.com/bazel-contrib/rules_oci/blob/main/docs/load.md#oci_load) | rules_oci |
-| [image_load](https://github.com/bazel-contrib/rules_img/blob/main/docs/load.md#image_load) | rules_img |
+Host ports are the other shared resource on a machine running many tests. By default the
+test yaml drops the host side of every published port, the daemon assigns a free one at
+startup, and the runner hands the result to the test through the environment:
+
+| Variable | Value |
+|----------|-------|
+| `RULES_DOCKER_COMPOSE_HOST_<SERVICE>_<PORT>` | `host:port` the container port is reachable at, e.g. `127.0.0.1:49153` |
+| `RULES_DOCKER_COMPOSE_PORT_<SERVICE>_<PORT>` | the host port alone |
+
+`<SERVICE>` is the compose service name upper-cased with anything but letters and digits
+replaced by `_`, and `<PORT>` is the container port. `${NAME}` references in `test_args`
+and in the test target's `env` are expanded against these at test time, so a test can be
+told `-host $${RULES_DOCKER_COMPOSE_HOST_NGINX_80}` without knowing the port in advance.
+Two tests publishing the same declared port therefore no longer conflict, and the declared
+port keeps working for `bazel run`. Set `ephemeral_ports = False` to opt out.
+
+Each run also uses its own compose project name, the target-derived name plus a random
+suffix, so concurrent runs of one target, or a run overlapping a crashed predecessor, never
+share containers or networks. Network and volume names derived from the project follow
+suit; names set explicitly in the compose file, like `container_name`, are kept as written
+and remain the user's responsibility.
+
+The test requires network access and a Docker daemon reachable from the host. The Docker
+endpoint variables are inherited from the invoking shell.
+
+Images are declared through `oci_load` or `image_load` targets in `images`, and every
+`services.*.image` value must equal a tag declared on one of them. The `docker_compose_yaml`
+rule documentation describes the contract, the supported loaders and the rules_img
+requirements in full; passing a single `docker_compose_yaml` target as `yamls` is the
+simplest way to share one set of images between a yaml, a test and a binary.
+
+The `test` is normally an ordinary `*_test` target written with the language's test
+framework and tagged `manual`, so `bazel test //...` runs it only through this rule, with
+the services up. Its `args` and `env` are honored, which keeps the service address next to
+the test that reads it.
 
 Example:
 ```python
 load("@rules_docker_compose//docker_compose:docker_compose_test.bzl", "docker_compose_test")
 load("@rules_oci//oci:defs.bzl", "oci_load")
+load("@rules_python//python:defs.bzl", "py_test")
 
 oci_load(
     name = "my_service.load",
@@ -808,18 +970,33 @@ oci_load(
     repo_tags = ["my-service:latest"],
 )
 
+py_test(
+    name = "my_service_test",
+    srcs = ["my_service_test.py"],
+    env = {"SERVICE_HOST": "localhost:8080"},
+    # Only meaningful with the services running, so only run via :integration_test.
+    tags = ["manual"],
+)
+
 docker_compose_test(
     name = "integration_test",
     yamls = ["docker-compose.yaml"],
     images = [":my_service.load"],
-    test = ":my_test_binary",
-    test_args = ["-host", "localhost:8080"],
+    test = ":my_service_test",
     delay = 2,  # Wait 2 seconds after containers start
 )
 ```
 """,
     implementation = _docker_compose_test_impl,
     attrs = {
+        "allow_registry_images": attr.bool(
+            doc = """\
+Permit digest-pinned image references that have no loader when merging raw
+`yamls`. See the `docker_compose_yaml` rule for details. Setting this is an
+error when `yamls` is a single `docker_compose_yaml` target.
+""",
+            default = False,
+        ),
         "data": attr.label_list(
             doc = "Additional runtime dependencies for the test.",
         ),
@@ -832,10 +1009,22 @@ docker_compose_test(
             default = {},
         ),
         "env_inherit": attr.string_list(
-            doc = "Specifies additional environment variables to inherit from the external environment when the test is executed by `bazel test`.",
+            doc = (
+                "Specifies additional environment variables to inherit from the external environment when the " +
+                "test is executed by `bazel test`. The Docker endpoint variables (`DOCKER_HOST`, `DOCKER_CONTEXT`, " +
+                "`DOCKER_CONFIG`, `DOCKER_CERT_PATH`, `DOCKER_TLS_VERIFY`, `DOCKER_API_VERSION`) are always inherited."
+            ),
+        ),
+        "ephemeral_ports": attr.bool(
+            doc = """\
+Let the daemon choose host ports when merging raw `yamls`. See the `docker_compose_yaml`
+rule for details. Setting this is an error when `yamls` is a single `docker_compose_yaml`
+target.
+""",
+            default = True,
         ),
         "images": attr.label_list(
-            doc = "Image loader targets that provide the container images for the docker-compose services. Each image will be loaded into Docker before `docker-compose up` is called. See the rule documentation for supported loader types.",
+            doc = _IMAGES_ATTR_DOC,
             aspects = [image_load_repository_aspect],
         ),
         "interpolate": attr.bool(
@@ -863,14 +1052,28 @@ target; declare it on that target instead.
 """,
             default = {},
         ),
+        "startup_timeout": attr.int(
+            doc = (
+                "Seconds to wait for every service to be running, and healthy when it declares a healthcheck, " +
+                "before the test is considered failed."
+            ),
+            default = 60,
+        ),
         "test": attr.label(
-            doc = "The test binary to execute after containers are running. The binary will receive arguments from `test_args`.",
+            doc = (
+                "The executable to run once the services are up. This is usually a `*_test` target " +
+                "(`py_test`, `rust_test`, `go_test`, ...) tagged `manual` so it only runs here; its `args` " +
+                "and `env` are honored. A plain binary works too. Arguments from `test_args` take precedence."
+            ),
             cfg = "target",
             executable = True,
             aspects = [_args_collecter_aspect],
         ),
         "test_args": attr.string_list(
-            doc = "Arguments to pass to the test binary.",
+            doc = (
+                "Arguments to pass to the test binary. `${NAME}` references are expanded at test time against " +
+                "the test's environment, including the port variables; write them as `$${NAME}` in BUILD files."
+            ),
             default = [],
         ),
         "yamls": attr.label_list(

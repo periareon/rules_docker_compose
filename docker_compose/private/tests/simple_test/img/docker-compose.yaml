@@ -2,4 +2,4 @@ services:
     nginx:
         image: docker.io/rules_docker_compose/img_test/nginx:latest
         ports:
-            - "8081:80"
+            - "18081:80"

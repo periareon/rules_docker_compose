@@ -1,14 +1,17 @@
 load("@rules_docker_compose//docker_compose:docker_compose_test.bzl", "docker_compose_test")
 load("@rules_oci//oci:defs.bzl", "oci_image", "oci_load")
-load("@rules_rust//rust:rust_binary.bzl", "rust_binary")
+load("@rules_rust//rust:rust_test.bzl", "rust_test")
 
-rust_binary(
+# An ordinary rust_test. It needs the services running, so it is `manual` and
+# only ever executed through `:simple_test` below.
+rust_test(
     name = "tester",
     srcs = ["tester.rs"],
-    rustc_flags = [
-        # Enable libtest for a canonical rust test experience.
-        "--test",
-    ],
+    env = {
+        # Expanded by docker_compose_test once the daemon has assigned the port.
+        "SERVICE_HOST": "$${RULES_DOCKER_COMPOSE_HOST_NGINX_80}",
+    },
+    tags = ["manual"],
     deps = ["@crate_index//:reqwest"],
 )
 
@@ -32,9 +35,6 @@ oci_load(
 
 docker_compose_test(
     name = "simple_test",
-    env = {
-        "SERVICE_HOST": "localhost:1337",
-    },
     images = [":nginx.load"],
     tags = ["requires-docker"],
     test = ":tester",

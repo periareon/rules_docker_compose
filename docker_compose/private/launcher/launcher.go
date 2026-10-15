@@ -1,51 +1,24 @@
+// The launcher backs `bazel run` of a docker_compose_binary. It makes every
+// loader-backed image available under the tags the user declared, verifies
+// each against the identity recorded at build time, then replaces itself with
+// docker-compose so the user gets compose's own signal handling and terminal
+// behaviour.
 package main
 
 import (
 	"bufio"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 	"syscall"
 
 	"github.com/bazelbuild/rules_go/go/runfiles"
+	"github.com/periareon/rules_docker_compose/docker_compose/private/images"
 )
 
 func debugLog(format string, args ...interface{}) {
-	if os.Getenv("RULES_DOCKER_COMPOSE_DEBUG") != "" {
-		fmt.Fprintf(os.Stderr, "[DEBUG] "+format+"\n", args...)
-	}
-}
-
-// TagRewrite mirrors the merger's sidecar JSON entry. The launcher ignores
-// the Unique field — interactive `bazel run :compose -- ...` deliberately
-// leaves the user-facing tags alone so users see the names they declared.
-type TagRewrite struct {
-	Original string `json:"original"`
-	Unique   string `json:"unique"`
-}
-
-type LoaderEntry struct {
-	LoaderRlocation string       `json:"loader_rlocationpath"`
-	Tags            []TagRewrite `json:"tags"`
-}
-
-type RuntimeManifest struct {
-	Loaders []LoaderEntry `json:"loaders"`
-}
-
-func loadRuntimeManifest(path string) (*RuntimeManifest, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read runtime manifest %s: %v", path, err)
-	}
-	var rm RuntimeManifest
-	if err := json.Unmarshal(data, &rm); err != nil {
-		return nil, fmt.Errorf("failed to parse runtime manifest %s: %v", path, err)
-	}
-	return &rm, nil
+	images.Debugf(format, args...)
 }
 
 type Args struct {
@@ -54,15 +27,10 @@ type Args struct {
 	RuntimeManifest string
 }
 
-func parseArgs() (*Args, error) {
+func parseArgs(rf *runfiles.Runfiles) (*Args, error) {
 	argsFile := os.Getenv("RULES_DOCKER_COMPOSE_ARGS_FILE")
 	if argsFile == "" {
 		return nil, fmt.Errorf("RULES_DOCKER_COMPOSE_ARGS_FILE environment variable is not set")
-	}
-
-	rf, err := runfiles.New()
-	if err != nil {
-		return nil, fmt.Errorf("failed to initialize runfiles: %v", err)
 	}
 
 	resolvedArgsFile, err := rf.Rlocation(argsFile)
@@ -90,42 +58,32 @@ func parseArgs() (*Args, error) {
 			argLines = append(argLines, parts[0])
 		}
 	}
-
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("error reading args file: %v", err)
 	}
 
 	fs := flag.NewFlagSet("launcher", flag.ContinueOnError)
 	args := &Args{}
-
 	fs.StringVar(&args.DockerCompose, "docker-compose", "", "Path to docker-compose binary")
 	fs.StringVar(&args.Yaml, "yaml", "", "Path to docker-compose yaml file")
 	fs.StringVar(&args.RuntimeManifest, "runtime-manifest", "", "Path to runtime manifest JSON")
-
 	if err := fs.Parse(argLines); err != nil {
 		return nil, fmt.Errorf("failed to parse args: %v", err)
 	}
 
-	if args.DockerCompose != "" {
-		resolved, err := rf.Rlocation(args.DockerCompose)
-		if err != nil {
-			return nil, fmt.Errorf("failed to resolve docker-compose path %s: %v", args.DockerCompose, err)
+	for name, field := range map[string]*string{
+		"docker-compose":   &args.DockerCompose,
+		"yaml":             &args.Yaml,
+		"runtime-manifest": &args.RuntimeManifest,
+	} {
+		if *field == "" {
+			continue
 		}
-		args.DockerCompose = resolved
-	}
-	if args.Yaml != "" {
-		resolved, err := rf.Rlocation(args.Yaml)
+		resolved, err := rf.Rlocation(*field)
 		if err != nil {
-			return nil, fmt.Errorf("failed to resolve yaml path %s: %v", args.Yaml, err)
+			return nil, fmt.Errorf("failed to resolve %s path %s: %v", name, *field, err)
 		}
-		args.Yaml = resolved
-	}
-	if args.RuntimeManifest != "" {
-		resolved, err := rf.Rlocation(args.RuntimeManifest)
-		if err != nil {
-			return nil, fmt.Errorf("failed to resolve runtime manifest path %s: %v", args.RuntimeManifest, err)
-		}
-		args.RuntimeManifest = resolved
+		*field = resolved
 	}
 
 	if args.DockerCompose == "" {
@@ -134,63 +92,57 @@ func parseArgs() (*Args, error) {
 	if args.Yaml == "" {
 		return nil, fmt.Errorf("missing required flag: -yaml")
 	}
-
 	return args, nil
 }
 
 func main() {
 	debugLog("Starting launcher")
-	args, err := parseArgs()
+	rf, err := runfiles.New()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: failed to initialize runfiles: %v\n", err)
+		os.Exit(1)
+	}
+	args, err := parseArgs(rf)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error parsing args: %v\n", err)
 		os.Exit(1)
 	}
-	debugLog("Parsed args: docker-compose=%s, yaml=%s, runtime-manifest=%s",
-		args.DockerCompose, args.Yaml, args.RuntimeManifest)
+	debugLog("Parsed args: %+v", args)
 
-	// Run loaders so the user-declared original tags resolve in the engine.
-	// No retag / no daemon lock: bazel run is interactive, and the YAML
-	// references original tags so users see familiar names in `docker ps`.
-	var loaders []LoaderEntry
 	if args.RuntimeManifest != "" {
-		rm, err := loadRuntimeManifest(args.RuntimeManifest)
+		manifest, err := images.ReadRuntimeManifest(args.RuntimeManifest)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error loading runtime manifest: %v\n", err)
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
-		loaders = rm.Loaders
-	}
-	if len(loaders) > 0 {
-		rf, err := runfiles.New()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Failed to load runfiles: %v\n", err)
-			os.Exit(1)
-		}
-		debugLog("Running %d image loader(s)", len(loaders))
-		for i, entry := range loaders {
-			loaderPath, err := rf.Rlocation(entry.LoaderRlocation)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error resolving loader %s: %v\n", entry.LoaderRlocation, err)
+		if len(manifest.Images) > 0 {
+			engine := images.NewEngine()
+			if err := engine.Preflight(); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
 			}
-			debugLog("Loader %d: %s", i+1, loaderPath)
-			loaderCmd := exec.Command(loaderPath)
-			loaderCmd.Stdout = os.Stderr
-			loaderCmd.Stderr = os.Stderr
-			loaderCmd.Env = append(os.Environ(), rf.Env()...)
-			if err := loaderCmd.Run(); err != nil {
-				fmt.Fprintf(os.Stderr, "Error running loader %s: %v\n", entry.LoaderRlocation, err)
-				os.Exit(1)
+			// The user-facing yaml references the declared tags, so those are
+			// applied here on top of the unique ones. They are still pointed
+			// at the image by digest, never copied from another name.
+			for i := range manifest.Images {
+				img := &manifest.Images[i]
+				tarPath, err := rf.Rlocation(img.TarRlocation)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Error: failed to resolve image tarball %s: %v\n", img.TarRlocation, err)
+					os.Exit(1)
+				}
+				id, err := engine.Ensure(img, tarPath, img.OriginalTags...)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+					os.Exit(1)
+				}
+				fmt.Fprintf(os.Stderr, "Verified image %s as %s (%s)\n", img.Label, id, strings.Join(img.OriginalTags, ", "))
 			}
-			debugLog("Loader %d completed", i+1)
 		}
-	} else {
-		debugLog("No image loaders specified")
 	}
 
 	execArgs := []string{args.DockerCompose, "-f", args.Yaml}
 	execArgs = append(execArgs, os.Args[1:]...)
-
 	debugLog("Exec: %v", execArgs)
 	if err := syscall.Exec(args.DockerCompose, execArgs, os.Environ()); err != nil {
 		fmt.Fprintf(os.Stderr, "Error exec'ing docker-compose: %v\n", err)

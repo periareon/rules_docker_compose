@@ -4,5 +4,8 @@ go_binary(
     name = "launcher",
     srcs = ["launcher.go"],
     visibility = ["//visibility:public"],
-    deps = ["@rules_go//go/runfiles"],
+    deps = [
+        "//docker_compose/private/images",
+        "@rules_go//go/runfiles",
+    ],
 )

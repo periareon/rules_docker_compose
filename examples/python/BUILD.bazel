@@ -1,10 +1,17 @@
 load("@rules_docker_compose//docker_compose:docker_compose_test.bzl", "docker_compose_test")
 load("@rules_oci//oci:defs.bzl", "oci_image", "oci_load")
-load("@rules_venv//python:py_binary.bzl", "py_binary")
+load("@rules_venv//python:py_test.bzl", "py_test")
 
-py_binary(
+# An ordinary py_test. It needs the services running, so it is `manual` and
+# only ever executed through `:simple_test` below.
+py_test(
     name = "tester",
     srcs = ["tester.py"],
+    env = {
+        # Expanded by docker_compose_test once the daemon has assigned the port.
+        "SERVICE_HOST": "$${RULES_DOCKER_COMPOSE_HOST_NGINX_80}",
+    },
+    tags = ["manual"],
     deps = [
         "@pip_deps//pytest",
         "@pip_deps//requests",
@@ -31,9 +38,6 @@ oci_load(
 
 docker_compose_test(
     name = "simple_test",
-    env = {
-        "SERVICE_HOST": "localhost:1337",
-    },
     images = [":nginx.load"],
     tags = ["requires-docker"],
     test = ":tester",

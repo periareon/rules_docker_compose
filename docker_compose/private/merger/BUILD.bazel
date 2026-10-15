@@ -6,6 +6,7 @@ go_library(
     importpath = "github.com/periareon/rules_docker_compose/docker_compose/private/merger",
     visibility = ["//visibility:private"],
     deps = [
+        "//docker_compose/private/images",
         "@in_gopkg_yaml_v3//:yaml_v3",
     ],
 )
