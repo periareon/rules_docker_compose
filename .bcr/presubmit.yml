@@ -17,5 +17,7 @@ bcr_test_module:
       name: "Run test module"
       platform: ${{ platform }}
       bazel: ${{ bazel }}
-      test_targets:
+      # BCR docker setup is not in our control so shouldn't be
+      # trusted to gate releases.
+      build_targets:
         - "//..."
